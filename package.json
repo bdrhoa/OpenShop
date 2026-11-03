@@ -61,5 +61,14 @@
     "vite": "^7.1.2",
     "vitest": "^2.1.8",
     "wrangler": "^4.42.2"
+  },
+  "allowScripts": {
+    "esbuild@0.24.2": true,
+    "esbuild@0.21.5": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.25.4": true,
+    "workerd@1.20251008.0": true,
+    "@tailwindcss/oxide@4.1.13": true,
+    "sharp@0.33.5": true
   }
 }
