@@ -33,3 +33,5 @@ wrangler.toml
 # Accidental local verification artifacts
 /verification.png
 /verify_media_modal.py
+# Local credentials notes - never commit
+cloudflareforopenshop.txt
