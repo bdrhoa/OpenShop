@@ -1,6 +1,7 @@
 // Stripe service - handles Stripe operations
 import Stripe from 'stripe'
 import { SHIPPING_COUNTRIES } from '../config/index.js'
+import { KOUNT_SESSION_METADATA_KEY } from '../config/kount.js'
 import { APIError } from '../utils/errors.js'
 
 // Reserved local-dev sentinel from scripts/dev/build-local-config.mjs (.dev.vars).
@@ -56,8 +57,9 @@ function clipMeta(value) {
 /**
  * Cart checkout metadata that never exceeds Stripe's 50-key limit.
  * @param {Array<{name?: string, quantity?: number, selectedVariant?: {name?: string}, selectedVariant2?: {name?: string}}>} items
+ * @param {string} [kountSessionId] Takes the place of one detailed item, keeping the worst case within the limit.
  */
-export function buildCartCheckoutMetadata(items) {
+export function buildCartCheckoutMetadata(items, kountSessionId) {
   const list = Array.isArray(items) ? items : []
   const metadata = {
     order_type: 'cart_checkout',
@@ -65,7 +67,8 @@ export function buildCartCheckoutMetadata(items) {
     total_quantity: String(list.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0)),
   }
 
-  const detailed = list.slice(0, CART_METADATA_DETAILED_ITEM_LIMIT)
+  const detailedItemLimit = CART_METADATA_DETAILED_ITEM_LIMIT - (kountSessionId ? 1 : 0)
+  const detailed = list.slice(0, detailedItemLimit)
   detailed.forEach((item, index) => {
     metadata[`item_${index}_name`] = clipMeta(item.name || `Item ${index + 1}`)
     if (item.selectedVariant?.name) {
@@ -76,9 +79,13 @@ export function buildCartCheckoutMetadata(items) {
     }
   })
 
-  if (list.length > CART_METADATA_DETAILED_ITEM_LIMIT) {
+  if (list.length > detailedItemLimit) {
     metadata.metadata_truncated = 'true'
-    metadata.overflow_item_count = String(list.length - CART_METADATA_DETAILED_ITEM_LIMIT)
+    metadata.overflow_item_count = String(list.length - detailedItemLimit)
+  }
+
+  if (kountSessionId) {
+    metadata[KOUNT_SESSION_METADATA_KEY] = kountSessionId
   }
 
   return metadata
@@ -219,7 +226,7 @@ export class StripeService {
   /**
    * Create checkout session for single item
    */
-  async createCheckoutSession(priceId) {
+  async createCheckoutSession(priceId, kountSessionId) {
     this.assertCheckoutAvailable()
     return await this.stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -231,13 +238,14 @@ export class StripeService {
       billing_address_collection: 'required',
       success_url: `${this.siteUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${this.siteUrl}/`,
+      ...(kountSessionId && { metadata: { [KOUNT_SESSION_METADATA_KEY]: kountSessionId } }),
     })
   }
 
   /**
    * Create checkout session for cart
    */
-  async createCartCheckoutSession(items) {
+  async createCartCheckoutSession(items, kountSessionId) {
     this.assertCheckoutAvailable()
     const lineItems = items.map(item => {
       // When using price IDs, you cannot set description, name, images, etc. directly
@@ -264,7 +272,7 @@ export class StripeService {
       billing_address_collection: 'required',
       success_url: `${this.siteUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${this.siteUrl}/`,
-      metadata: buildCartCheckoutMetadata(items),
+      metadata: buildCartCheckoutMetadata(items, kountSessionId),
     })
   }
 
@@ -280,7 +288,8 @@ export class StripeService {
       currency: session.currency,
       customer_email: session.customer_details?.email,
       payment_status: session.payment_status,
-      created: session.created
+      created: session.created,
+      kount_session_id: session.metadata?.[KOUNT_SESSION_METADATA_KEY],
     }
   }
 

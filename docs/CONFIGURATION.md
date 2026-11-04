@@ -145,6 +145,20 @@ To enable AI image generation in the admin:
 2. Add `OPENROUTER_API_KEY` to your environment variables
 3. The feature will be available in the admin media picker
 
+### Kount Device Data Collector (single-site proof of concept)
+
+The DDC runs only on the exact hostname in `KOUNT_DDC_HOST` (`src/config/kount.js`), and only when `VITE_KOUNT_CLIENT_ID` is set at build time. Set that value in the site's `.env.<site>` file. It is a public identifier that the SDK sends from the browser. Never put a Kount API key in a `VITE_` variable.
+
+| Behaviour | Where |
+|-----------|-------|
+| Collection starts on the first storefront page load (not `/admin`) | `src/lib/kountDdc.js`, called from `src/main.jsx` |
+| Session ID persists in `localStorage` across tabs and the Stripe redirect | `src/lib/kountDdc.js` |
+| Session ID is saved to the Stripe Checkout Session as `metadata.kount_session_id`, for use as `deviceSessionId` | `src/routes/public/checkout.js`, `src/services/StripeService.js` |
+| Session ID rotates after a paid order, or after 24 hours away | `src/lib/kountDdc.js` |
+| Collector origin is allowed in `connect-src` and `frame-src` | `src/middleware/securityHeaders.js` |
+
+`/` is served directly by Workers Assets without Worker headers; deep links such as `/products/:id` get the Worker CSP. Test the DDC on both.
+
 ### Google Drive Integration
 
 To enable Google Drive uploads:

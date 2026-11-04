@@ -37,6 +37,67 @@ describe('Checkout Process', () => {
     vi.clearAllMocks()
   })
 
+  describe('Kount session ID', () => {
+    const ddcSite = 'https://kount-poc-run-110301.bdrhoa.workers.dev'
+    const kountSessionId = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
+    const createdMetadata = () => mockStripe.checkout.sessions.create.mock.calls[0][0].metadata
+
+    beforeEach(() => {
+      mockStripe.checkout.sessions.create.mockResolvedValue({
+        id: createStripeSessionId(),
+        url: 'https://checkout.stripe.com/test'
+      })
+    })
+
+    it('stores the ID on single-item checkout for the DDC site', async () => {
+      const request = createTestRequest(`${ddcSite}/api/create-checkout-session`, {
+        method: 'POST',
+        body: { priceId: createStripePriceId(), kountSessionId }
+      })
+
+      const response = await executeRequest(app, request, env)
+
+      expect(response.status).toBe(200)
+      expect(createdMetadata()).toEqual({ kount_session_id: kountSessionId })
+    })
+
+    it('stores the ID on cart checkout for the DDC site', async () => {
+      const request = createTestRequest(`${ddcSite}/api/create-cart-checkout-session`, {
+        method: 'POST',
+        body: { items: createTestCartItems(), kountSessionId }
+      })
+
+      const response = await executeRequest(app, request, env)
+
+      expect(response.status).toBe(200)
+      expect(createdMetadata().kount_session_id).toBe(kountSessionId)
+    })
+
+    it('ignores the ID on other sites', async () => {
+      const request = createTestRequest('https://kount-poc-base.bdrhoa.workers.dev/api/create-cart-checkout-session', {
+        method: 'POST',
+        body: { items: createTestCartItems(), kountSessionId }
+      })
+
+      const response = await executeRequest(app, request, env)
+
+      expect(response.status).toBe(200)
+      expect(createdMetadata().kount_session_id).toBeUndefined()
+    })
+
+    it('completes checkout without an invalid ID', async () => {
+      const request = createTestRequest(`${ddcSite}/api/create-cart-checkout-session`, {
+        method: 'POST',
+        body: { items: createTestCartItems(), kountSessionId: 'not valid!' }
+      })
+
+      const response = await executeRequest(app, request, env)
+
+      expect(response.status).toBe(200)
+      expect(createdMetadata().kount_session_id).toBeUndefined()
+    })
+  })
+
   describe('POST /api/create-checkout-session', () => {
     it('should create a checkout session with valid priceId', async () => {
       const priceId = createStripePriceId()

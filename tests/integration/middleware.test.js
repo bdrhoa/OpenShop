@@ -42,6 +42,21 @@ describe('Middleware', () => {
       expect(csp).toContain("script-src 'self'")
     })
 
+    it('allows the Kount collector only on the DDC site', async () => {
+      const kountOrigin = 'https://tst.kaptcha.com'
+      const cspFor = async (url) => {
+        const response = await executeRequest(app, createTestRequest(url), env)
+        return response.headers.get('Content-Security-Policy')
+      }
+
+      const ddcCsp = await cspFor('https://kount-poc-run-110301.bdrhoa.workers.dev/api/health')
+      expect(ddcCsp).toMatch(new RegExp(`connect-src [^;]*${kountOrigin}`))
+      expect(ddcCsp).toMatch(new RegExp(`frame-src [^;]*${kountOrigin}`))
+
+      expect(await cspFor('https://kount-poc-base.bdrhoa.workers.dev/api/health')).not.toContain(kountOrigin)
+      expect(await cspFor('/api/health')).not.toContain(kountOrigin)
+    })
+
     it('should include Permissions-Policy header', async () => {
       const request = createTestRequest('/api/health', {
         method: 'GET'

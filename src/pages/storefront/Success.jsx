@@ -3,6 +3,7 @@ import { useSearchParams, Link } from 'react-router-dom'
 import { Button } from '../../components/ui/button'
 import { Footer } from '../../components/storefront/Footer'
 import { CheckCircle, Package, ArrowLeft } from 'lucide-react'
+import { rotateKountSessionAfterOrder } from '../../lib/kountDdc'
 
 export function Success() {
   const [searchParams] = useSearchParams()
@@ -24,6 +25,9 @@ export function Success() {
       if (response.ok) {
         const data = await response.json()
         setSessionData(data)
+        if (data.payment_status === 'paid') {
+          rotateKountSessionAfterOrder(data.kount_session_id)
+        }
       }
     } catch (error) {
       console.error('Error fetching session data:', error)

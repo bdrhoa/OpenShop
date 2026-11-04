@@ -3,6 +3,7 @@
 // Stripe.js's redirectToCheckout() is deprecated. The server returns the
 // hosted Checkout Session URL instead, and the browser simply navigates to it,
 // so the storefront needs neither Stripe.js nor a publishable key.
+import { withKountSession } from './kountDdc'
 
 export function goToCheckout(session) {
   if (!session?.url) {
@@ -15,7 +16,7 @@ export async function redirectToCheckout(priceId) {
   const response = await fetch('/api/create-checkout-session', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ priceId }),
+    body: JSON.stringify(withKountSession({ priceId })),
   })
   const session = await response.json().catch(() => ({}))
   if (!response.ok || session.error) {

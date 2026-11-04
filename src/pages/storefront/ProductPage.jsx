@@ -8,6 +8,7 @@ import { SmartImage } from '../../components/storefront/SmartImage'
 import { formatCurrency, normalizeImageUrl } from '../../lib/utils'
 import { useCart } from '../../contexts/CartContext'
 import { goToCheckout } from '../../lib/stripe'
+import { withKountSession } from '../../lib/kountDdc'
 import { Minus, Plus } from 'lucide-react'
 
 export function ProductPage() {
@@ -134,7 +135,7 @@ export function ProductPage() {
       const response = await fetch('/api/create-cart-checkout-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: [tempItem] })
+        body: JSON.stringify(withKountSession({ items: [tempItem] }))
       })
       const session = await response.json().catch(() => ({}))
       if (!response.ok || session.error) throw new Error(session.error || 'Error starting checkout. Please try again.')

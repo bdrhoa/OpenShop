@@ -7,12 +7,19 @@ import { parseJsonBody } from '../../utils/request.js'
 import { resolveSetting } from '../../services/DeveloperSettingsService.js'
 import { getKVNamespace } from '../../utils/kv.js'
 import { CART_MAX_ITEMS, CART_MAX_ITEM_QUANTITY } from '../../config/index.js'
+import { isKountDdcHost, isValidKountSessionId } from '../../config/kount.js'
 
 const router = new Hono()
 
+// A bad session ID must never block a sale, so it is dropped rather than rejected.
+function resolveKountSessionId(c, value) {
+  const hostname = new URL(c.req.url).hostname
+  return isKountDdcHost(hostname) && isValidKountSessionId(value) ? value : undefined
+}
+
 // Create checkout session (single item)
 router.post('/create-checkout-session', asyncHandler(async (c) => {
-  const { priceId } = await parseJsonBody(c)
+  const { priceId, kountSessionId } = await parseJsonBody(c)
   
   // Validate and trim priceId
   if (!priceId || typeof priceId !== 'string') {
@@ -39,13 +46,13 @@ router.post('/create-checkout-session', asyncHandler(async (c) => {
     await resolveSetting(getKVNamespace(c.env), c.env, 'STRIPE_SECRET_KEY'),
     await resolveSetting(getKVNamespace(c.env), c.env, 'SITE_URL'),
   )
-  const session = await stripeService.createCheckoutSession(trimmedPriceId)
+  const session = await stripeService.createCheckoutSession(trimmedPriceId, resolveKountSessionId(c, kountSessionId))
   return c.json({ sessionId: session.id, url: session.url })
 }))
 
 // Create cart checkout session
 router.post('/create-cart-checkout-session', asyncHandler(async (c) => {
-  const { items } = await parseJsonBody(c)
+  const { items, kountSessionId } = await parseJsonBody(c)
   
   // Validate items array
   if (!items || !Array.isArray(items) || items.length === 0) {
@@ -94,7 +101,7 @@ router.post('/create-cart-checkout-session', asyncHandler(async (c) => {
     await resolveSetting(getKVNamespace(c.env), c.env, 'STRIPE_SECRET_KEY'),
     await resolveSetting(getKVNamespace(c.env), c.env, 'SITE_URL'),
   )
-  const session = await stripeService.createCartCheckoutSession(normalizedItems)
+  const session = await stripeService.createCartCheckoutSession(normalizedItems, resolveKountSessionId(c, kountSessionId))
   return c.json({ sessionId: session.id, url: session.url })
 }))
 

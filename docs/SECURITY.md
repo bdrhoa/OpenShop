@@ -54,6 +54,7 @@ Admin dashboard (`POST /api/admin/agent/chat`) can read and write the same store
 - [ ] No new secrets in client bundle or committed `.env`
 - [ ] Admin endpoints remain behind auth middleware
 - [ ] CSP still allows required Stripe domains if checkout changes
+- [ ] Kount collector origin stays limited to `KOUNT_DDC_HOST` in `src/config/kount.js`
 - [ ] KV writes don’t expose other tenants’ data (single namespace per store deployment)
 
 ## Reporting
