@@ -61,8 +61,10 @@ app.get('*', async (c) => {
   try {
     // Try to serve the requested file first
     if (pathname !== '/' && !pathname.startsWith('/admin') && !pathname.startsWith('/collections') && !pathname.startsWith('/products') && !pathname.startsWith('/success')) {
-      const asset = await c.env.ASSETS.fetch(c.req)
-      if (asset.ok) {
+      // ASSETS.fetch needs the raw Request; c.req is a HonoRequest wrapper.
+      const asset = await c.env.ASSETS.fetch(c.req.raw)
+      // Only a 404 means "not a file". Anything else (e.g. a 304) is the asset's answer.
+      if (asset.status !== 404) {
         return asset
       }
     }
@@ -70,8 +72,8 @@ app.get('*', async (c) => {
     // For SPA routes (/admin, /collections, etc.) or root, serve index.html
     const indexUrl = new URL(c.req.url)
     indexUrl.pathname = '/index.html'
-    const indexRequest = new Request(indexUrl, c.req)
-    const indexAsset = await c.env.ASSETS.fetch(indexRequest)
+    // Plain GET: the client's validators belong to the URL it asked for, not to index.html.
+    const indexAsset = await c.env.ASSETS.fetch(new Request(indexUrl))
     
     if (indexAsset.ok) {
       return indexAsset
