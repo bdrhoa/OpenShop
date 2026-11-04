@@ -28,7 +28,8 @@
     "wrangler:login": "wrangler auth login",
     "test": "vitest",
     "test:watch": "vitest --watch",
-    "test:coverage": "vitest --coverage"
+    "test:coverage": "vitest --coverage",
+    "clone": "node scripts/clone-site.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.10",
