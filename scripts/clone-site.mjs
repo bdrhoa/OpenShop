@@ -42,6 +42,20 @@ const dstToml = join('toml', `${target}.toml`)
 if (!existsSync(srcToml)) die(`${srcToml} not found`)
 if (existsSync(dstToml)) die(`${dstToml} already exists; pick another name or delete it first`)
 
+// Load the source site's env file (CLOUDFLARE_ACCOUNT_ID etc.) the same way
+// `npm run deploy <site>` does; without the account id, wrangler has to look
+// the account up and scoped API tokens fail with auth error 10000.
+for (const envPath of [`.env.${source}`, join('env', `${source}.env`)]) {
+  if (!existsSync(envPath)) continue
+  for (const line of readFileSync(envPath, 'utf8').split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#') || !trimmed.includes('=')) continue
+    const [key, ...rest] = trimmed.split('=')
+    if (process.env[key.trim()] === undefined) process.env[key.trim()] = rest.join('=').trim()
+  }
+  break
+}
+
 let toml = readFileSync(srcToml, 'utf8')
 const srcName = toml.match(/^name = "([^"]+)"/m)?.[1] || source
 const srcKvId = toml.match(/\[\[kv_namespaces\]\][\s\S]*?id = "([^"]+)"/)?.[1]
