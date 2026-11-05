@@ -3,7 +3,8 @@
 // Hosted Stripe Checkout authorizes the card on Stripe's page, so the order is
 // evaluated after authorization and before capture. That is when the email,
 // addresses and card details first exist. Only a decision in
-// KOUNT_CAPTURE_DECISIONS releases the funds.
+// KOUNT_CAPTURE_DECISIONS releases the funds. REVIEW captures them too, but the
+// order is on hold until a Kount webhook resolves it (see KountWebhookService.js).
 import {
   KOUNT_CAPTURE_DECISIONS,
   KOUNT_CHANNEL,
@@ -12,6 +13,7 @@ import {
   KOUNT_ORDERS_URL,
   KOUNT_ORDER_ID_METADATA_KEY,
   KOUNT_REQUEST_TIMEOUT_MS,
+  KOUNT_REVIEW_DECISION,
   KOUNT_SESSION_METADATA_KEY,
   KOUNT_TOKEN_SCOPE,
   KOUNT_TOKEN_URL,
@@ -103,6 +105,31 @@ export class KountService {
       throw unavailable('order evaluation returned no usable decision')
     }
     return { orderId: evaluated.orderId, decision: inquiry.decision }
+  }
+
+  /**
+   * Read an order's current decision.
+   * @param {string} orderId Kount order ID
+   * @returns {Promise<{orderId: string, merchantOrderId?: string, decision: 'APPROVE'|'DECLINE'|'REVIEW'}>}
+   */
+  async getOrder(orderId) {
+    const response = await fetch(`${KOUNT_ORDERS_URL}/${encodeURIComponent(orderId)}`, {
+      headers: { Authorization: `Bearer ${await this.getToken()}` },
+      signal: AbortSignal.timeout(KOUNT_REQUEST_TIMEOUT_MS),
+    })
+
+    if (!response.ok) {
+      if (response.status === 401) resetKountTokenCache()
+      const correlationId = response.headers.get('x-correlation-id')
+      throw unavailable(`order lookup failed with HTTP ${response.status} (correlation ${correlationId})`)
+    }
+
+    const { order } = await response.json()
+    const inquiry = [order?.riskInquiry].flat()[0]
+    if (!KOUNT_DECISIONS.includes(inquiry?.decision)) {
+      throw unavailable('order lookup returned no usable decision')
+    }
+    return { orderId, merchantOrderId: order.merchantOrderId, decision: inquiry.decision }
   }
 }
 
@@ -209,11 +236,22 @@ export function buildKountOrder(session, lineItems) {
   }
 }
 
+/** Capture or cancel a payment that is still held. */
+export async function settleHeldPayment(stripeService, paymentIntentId, decision) {
+  if (KOUNT_CAPTURE_DECISIONS.includes(decision)) {
+    await stripeService.capturePaymentIntent(paymentIntentId)
+    return { decision, outcome: 'captured' }
+  }
+  await stripeService.cancelPaymentIntentAsFraudulent(paymentIntentId)
+  return { decision, outcome: 'canceled' }
+}
+
 /**
- * Evaluate a completed checkout and capture or cancel its held payment. Safe to
- * repeat: Stripe retries webhooks, a saved decision is not evaluated again, and
- * a payment that is no longer held is left alone.
- * @returns {Promise<{decision?: string, outcome: 'captured'|'canceled'|'skipped'}>}
+ * Evaluate a completed checkout, then capture or cancel its held payment. REVIEW
+ * captures and leaves the order on hold. Safe to repeat: Stripe retries webhooks,
+ * a saved decision is not evaluated again, and a payment that is no longer held
+ * is left alone.
+ * @returns {Promise<{decision?: string, outcome: 'captured'|'canceled'|'on_hold'|'skipped'}>}
  */
 export async function settleHeldCheckout({ stripeService, kountService, sessionId }) {
   const session = await stripeService.getCheckoutSessionForRiskEvaluation(sessionId)
@@ -236,10 +274,6 @@ export async function settleHeldCheckout({ stripeService, kountService, sessionI
     })
   }
 
-  if (KOUNT_CAPTURE_DECISIONS.includes(decision)) {
-    await stripeService.capturePaymentIntent(paymentIntent.id)
-    return { decision, outcome: 'captured' }
-  }
-  await stripeService.cancelPaymentIntentAsFraudulent(paymentIntent.id)
-  return { decision, outcome: 'canceled' }
+  const result = await settleHeldPayment(stripeService, paymentIntent.id, decision)
+  return decision === KOUNT_REVIEW_DECISION ? { decision, outcome: 'on_hold' } : result
 }

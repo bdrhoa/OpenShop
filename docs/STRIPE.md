@@ -97,16 +97,28 @@ Hosted Checkout collects the card and authorizes it on Stripe's page, so OpenSho
 2. The customer pays. Stripe authorizes the card and the PaymentIntent moves to `requires_capture`.
 3. Stripe sends `checkout.session.completed` to `POST /api/stripe-webhook`, which verifies the signature.
 4. `settleHeldCheckout` (`src/services/KountService.js`) sends the order to Kount with `deviceSessionId` set to the DDC session ID, and saves `kount_order_id` and `kount_decision` on the PaymentIntent.
-5. `APPROVE` or `REVIEW` captures the payment. `DECLINE` cancels it, which releases the hold.
+5. `APPROVE` captures the payment. `DECLINE` cancels it, which releases the hold. `REVIEW` captures the payment and puts the order **on hold**, so it cannot ship.
+6. When a reviewer decides in Kount, Kount sends a signed event to `POST /api/kount-webhook`. `processKountOrderEvent` (`src/services/KountWebhookService.js`) saves the new decision on the PaymentIntent. `APPROVE` releases the order to ship. `DECLINE` refunds the payment in full.
+
+OpenShop has no order table, so these states are derived from the PaymentIntent: `order_status` is `on_hold` while `kount_decision` is `REVIEW`, and `refunded` when the payment succeeded and `kount_decision` is `DECLINE`.
 
 | Situation | Result |
 |-----------|--------|
 | Kount is unreachable, returns an error, or returns an unknown decision | Webhook returns an error, Stripe retries, and the payment stays held |
 | Webhook retried after a decision was saved | Kount is not called again; capture or cancel resumes |
 | Retries run out, or the webhook is not set up | Nothing is captured, and the authorization expires uncharged (usually after 7 days) |
-| A later Kount review outcome on a `REVIEW` order | Not handled: the payment is already captured, so refund it by hand |
+| Kount event arrives before the evaluation is saved | Webhook returns 503 and Kount retries |
+| Kount event repeated | Nothing more happens, and the webhook returns 200. A refund is never issued twice |
+| Reviewer declines before the capture has finished | The payment is canceled instead of refunded |
+| A final decision changes (for example, `DECLINE` after `APPROVE`) | Ignored and logged, because the order may have shipped. Handle it by hand |
+| Kount event for a note, agent, reason code or reversal | Ignored |
+| Kount event with a bad signature, or older than 45 minutes | Rejected with 400, and the order stays on hold |
 
-The success page polls `GET /api/checkout-session/:sessionId`, whose `order_status` is `pending`, `confirmed` or `declined`. Admin orders list only captured payments, so a held or declined order cannot be shipped by mistake.
+The success page polls `GET /api/checkout-session/:sessionId`, whose `order_status` is `pending`, `on_hold`, `confirmed`, `declined` or `refunded`. It stops polling at `on_hold`, because a review can take days. Admin lists orders on hold under their own **On hold** filter, and `POST /api/admin/analytics/orders/:orderId/fulfill` returns 409 on this site unless the order is `confirmed`. Other held, declined or refunded orders are not listed.
+
+Revenue includes orders on hold, because the payment is captured, and excludes orders refunded after a review. Stripe keeps its processing fee on a refund, so each declined review costs that fee.
+
+The Kount webhook takes the decision from the event's `newValue`. If that or `merchantOrderId` is missing, it reads them from `GET /commerce/v2/orders/{orderId}`. Kount's public docs do not give the full event body, so confirm the field names against a real Sandbox delivery.
 
 Setup is in [CONFIGURATION.md](./CONFIGURATION.md#kount-risk-evaluation-single-site-proof-of-concept).
 

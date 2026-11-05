@@ -5,6 +5,8 @@ import { StripeService } from '../../services/StripeService.js'
 import { getKVNamespace } from '../../utils/kv.js'
 import { asyncHandler } from '../../middleware/errorHandler.js'
 import { resolveSetting } from '../../services/DeveloperSettingsService.js'
+import { APIError } from '../../utils/errors.js'
+import { isKountDdcHost } from '../../config/kount.js'
 
 const router = new Hono()
 
@@ -55,6 +57,18 @@ router.post('/orders/:orderId/fulfill', asyncHandler(async (c) => {
   
   if (!kvNamespace) {
     throw new Error('KV namespace not available')
+  }
+
+  // An order can only ship once it is paid and clear of any Kount review.
+  if (isKountDdcHost(new URL(c.req.url).hostname)) {
+    const stripeService = new StripeService(
+      await resolveSetting(kvNamespace, c.env, 'STRIPE_SECRET_KEY'),
+      await resolveSetting(kvNamespace, c.env, 'SITE_URL'),
+    )
+    const { order_status: orderStatus } = await stripeService.getCheckoutSession(orderId)
+    if (orderStatus && orderStatus !== 'confirmed') {
+      throw new APIError('This order cannot be fulfilled until it is paid and approved', 409)
+    }
   }
 
   const fulfillmentKey = `order_fulfillment:${orderId}`

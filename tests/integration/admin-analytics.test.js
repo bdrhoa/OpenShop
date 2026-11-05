@@ -8,6 +8,7 @@ import Stripe from 'stripe'
 vi.mock('stripe', () => {
   const mockCheckoutSessions = {
     list: vi.fn(),
+    retrieve: vi.fn(),
     listLineItems: vi.fn()
   }
 
@@ -108,6 +109,54 @@ describe('Admin Analytics Endpoints', () => {
       const data = await parseJsonResponse(await executeRequest(app, request, env))
 
       expect(data.orders.map((order) => order.id)).toEqual(['cs_captured'])
+    })
+
+    describe('orders on hold for a Kount review', () => {
+      const session = (id, paymentIntent) => ({ id, status: 'complete', payment_intent: paymentIntent, created: 1 })
+      const listOrders = async (status) => {
+        const request = createTestRequest(`/api/admin/analytics/orders?status=${status}`, {
+          method: 'GET',
+          headers: createAdminHeaders(adminToken)
+        })
+        return (await parseJsonResponse(await executeRequest(app, request, env))).orders
+      }
+
+      beforeEach(() => {
+        mockStripe.checkout.sessions.list.mockResolvedValue({
+          data: [
+            session('cs_captured', 'pi_captured'),
+            session('cs_review', 'pi_review'),
+            session('cs_pending', 'pi_pending'),
+            session('cs_refunded', 'pi_refunded')
+          ],
+          has_more: false
+        })
+        mockStripe.checkout.sessions.listLineItems.mockResolvedValue({ data: [] })
+        mockStripe.paymentIntents.retrieve.mockImplementation(async (id) => ({
+          pi_captured: { id, capture_method: 'manual', status: 'succeeded' },
+          pi_review: { id, capture_method: 'manual', status: 'succeeded', metadata: { kount_decision: 'REVIEW' } },
+          pi_refunded: { id, capture_method: 'manual', status: 'succeeded', metadata: { kount_decision: 'DECLINE' } },
+          pi_pending: { id, capture_method: 'manual', status: 'requires_capture', metadata: {} }
+        })[id])
+      })
+
+      it('lists them under on_hold, with their status', async () => {
+        const orders = await listOrders('on_hold')
+
+        expect(orders.map((order) => [order.id, order.order_status])).toEqual([['cs_review', 'on_hold']])
+      })
+
+      it('keeps them, and refunded orders, out of the orders ready to ship', async () => {
+        const orders = await listOrders('open')
+
+        expect(orders.map((order) => order.id)).toEqual(['cs_captured'])
+      })
+
+      it('includes them in all orders', async () => {
+        const orders = await listOrders('all')
+
+        expect(orders.map((order) => order.id).sort()).toEqual(['cs_captured', 'cs_review'])
+      })
     })
 
     it('should return orders list', async () => {
@@ -224,6 +273,42 @@ describe('Admin Analytics Endpoints', () => {
   })
 
   describe('POST /api/admin/analytics/orders/:orderId/fulfill', () => {
+    describe('on the Kount site', () => {
+      const fulfill = () => executeRequest(app, createTestRequest(
+        'https://kount-poc-run-110301.bdrhoa.workers.dev/api/admin/analytics/orders/cs_review/fulfill',
+        { method: 'POST', headers: createAdminHeaders(adminToken) }
+      ), env)
+      const paymentIntent = (overrides) => ({
+        id: 'cs_review',
+        payment_intent: { capture_method: 'manual', status: 'succeeded', metadata: { kount_decision: 'REVIEW' }, ...overrides }
+      })
+
+      it('refuses an order on hold', async () => {
+        mockStripe.checkout.sessions.retrieve.mockResolvedValue(paymentIntent())
+
+        const response = await fulfill()
+
+        expect(response.status).toBe(409)
+        expect(await kv.get('order_fulfillment:cs_review')).toBeNull()
+      })
+
+      it('refuses a refunded order', async () => {
+        mockStripe.checkout.sessions.retrieve.mockResolvedValue(paymentIntent({ metadata: { kount_decision: 'DECLINE' } }))
+
+        const response = await fulfill()
+
+        expect(response.status).toBe(409)
+      })
+
+      it('allows an approved order', async () => {
+        mockStripe.checkout.sessions.retrieve.mockResolvedValue(paymentIntent({ metadata: { kount_decision: 'APPROVE' } }))
+
+        const response = await fulfill()
+
+        expect(response.status).toBe(200)
+      })
+    })
+
     it('should mark an order as fulfilled', async () => {
       const orderId = 'cs_test123'
 

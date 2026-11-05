@@ -1,5 +1,6 @@
 // Analytics service - handles analytics operations
-import { StripeService } from './StripeService.js'
+import { StripeService, orderStatus } from './StripeService.js'
+import { ORDER_STATUS_ON_HOLD, ORDER_STATUS_REFUNDED } from '../config/kount.js'
 
 export class AnalyticsService {
   constructor(stripeService, kv = null) {
@@ -36,7 +37,9 @@ export class AnalyticsService {
     const startDate = new Date(now.getTime() - (days * 24 * 60 * 60 * 1000))
 
     const paymentIntents = await this.stripe.listPaymentIntents(startDate)
-    const successfulPayments = paymentIntents.data.filter(pi => pi.status === 'succeeded')
+    const successfulPayments = paymentIntents.data.filter(
+      pi => pi.status === 'succeeded' && orderStatus(pi) !== ORDER_STATUS_REFUNDED,
+    )
     const totalRevenue = successfulPayments.reduce((sum, payment) => sum + payment.amount, 0) / 100
     const totalOrders = successfulPayments.length
     const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0
@@ -233,6 +236,7 @@ export class AnalyticsService {
           shipping: shippingDetails,
           payment_intent: s.payment_intent || null,
           payment_intent_status: paymentIntent?.status ?? null,
+          order_status: orderStatus(paymentIntent) ?? null,
           billing: {
             name: s.customer_details?.name || null,
             email: s.customer_details?.email || null,
@@ -306,11 +310,17 @@ export class AnalyticsService {
     const nextCursor = ordered.length > 0 ? ordered[0].id : null
     const prevCursor = ordered.length > 0 ? ordered[ordered.length - 1].id : null
 
-    // A held payment is not a sale until captured, and a canceled one never will
-    // be. Neither may appear as an order that is ready to ship.
-    const payableOrders = orders.filter(
-      (order) => !['requires_capture', 'canceled'].includes(order.payment_intent_status),
-    )
+    // A held payment is not a sale until captured, and a canceled or refunded one
+    // never will be. None may appear as an order that is ready to ship. Orders on
+    // hold for a Kount review are listed apart, and cannot be fulfilled.
+    const payableOrders = orders.filter((order) => {
+      if (order.order_status === ORDER_STATUS_ON_HOLD) {
+        return [ORDER_STATUS_ON_HOLD, 'all'].includes(fulfillmentFilter)
+      }
+      return fulfillmentFilter !== ORDER_STATUS_ON_HOLD
+        && order.order_status !== ORDER_STATUS_REFUNDED
+        && !['requires_capture', 'canceled'].includes(order.payment_intent_status)
+    })
 
     return {
       limit,

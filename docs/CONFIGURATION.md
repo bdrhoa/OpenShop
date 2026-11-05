@@ -170,7 +170,15 @@ wrangler secret put STRIPE_WEBHOOK_SECRET --config toml/kount-poc-run-110301.tom
 
 In Stripe, add the endpoint `https://kount-poc-run-110301.bdrhoa.workers.dev/api/stripe-webhook` for the `checkout.session.completed` event. Its signing secret is `STRIPE_WEBHOOK_SECRET`.
 
-Without these, checkout still works but every order stays on hold: nothing is captured, and each authorization expires uncharged. The Kount endpoints in `src/config/kount.js` are Sandbox.
+Without these, checkout still works but every order stays held: nothing is captured, and each authorization expires uncharged. The Kount endpoints in `src/config/kount.js` are Sandbox.
+
+To resolve orders that Kount sends to review, add a webhook in the Kount 360 portal for the **Order Update** event, pointing at `https://kount-poc-run-110301.bdrhoa.workers.dev/api/kount-webhook`. Copy the portal's webhook public key (PEM or base64) into a third value:
+
+```bash
+wrangler secret put KOUNT_WEBHOOK_PUBLIC_KEY --config toml/kount-poc-run-110301.toml
+```
+
+Without it, the endpoint returns 503, and orders on hold stay on hold with their payment captured.
 
 ### Google Drive Integration
 

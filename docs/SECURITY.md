@@ -56,7 +56,8 @@ Admin dashboard (`POST /api/admin/agent/chat`) can read and write the same store
 - [ ] CSP still allows required Stripe domains if checkout changes
 - [ ] Kount collector origin stays limited to `KOUNT_DDC_HOST` in `src/config/kount.js`
 - [ ] `KOUNT_API_KEY` and `STRIPE_WEBHOOK_SECRET` stay Worker secrets, never `VITE_` variables
-- [ ] A Kount failure or unknown decision never captures a held payment
+- [ ] A Kount failure or unknown decision never captures a held payment, releases an order on hold, or issues a refund
+- [ ] `POST /api/kount-webhook` acts only on a delivery with a valid RSA-PSS signature and a fresh timestamp
 - [ ] KV writes don’t expose other tenants’ data (single namespace per store deployment)
 
 ## Reporting

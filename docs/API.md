@@ -24,7 +24,8 @@ These endpoints handle payment processing and checkout flows.
 |----------|--------|-------------|----------------|
 | `/api/create-checkout-session` | `POST` | Single item checkout | None |
 | `/api/create-cart-checkout-session` | `POST` | Multi-item cart checkout | None |
-| `/api/stripe-webhook` | `POST` | Kount site only: evaluates a held payment, then captures or cancels it | Stripe signature |
+| `/api/stripe-webhook` | `POST` | Kount site only: evaluates a held payment, then captures or cancels it. `REVIEW` captures and puts the order on hold | Stripe signature |
+| `/api/kount-webhook` | `POST` | Kount site only: releases or refunds an order on hold after a Kount review | Kount signature |
 | `/api/image-proxy?src=<url>` | `GET` | Proxy for Google Drive raster images (JPEG/PNG/WebP/GIF/AVIF only) | None |
 
 ## Admin Endpoints (Authenticated)

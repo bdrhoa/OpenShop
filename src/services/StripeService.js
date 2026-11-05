@@ -1,7 +1,15 @@
 // Stripe service - handles Stripe operations
 import Stripe from 'stripe'
 import { SHIPPING_COUNTRIES } from '../config/index.js'
-import { KOUNT_SESSION_METADATA_KEY, KOUNT_USER_IP_METADATA_KEY } from '../config/kount.js'
+import {
+  KOUNT_DECISION_METADATA_KEY,
+  KOUNT_DECLINE_DECISION,
+  KOUNT_REVIEW_DECISION,
+  KOUNT_SESSION_METADATA_KEY,
+  KOUNT_USER_IP_METADATA_KEY,
+  ORDER_STATUS_ON_HOLD,
+  ORDER_STATUS_REFUNDED,
+} from '../config/kount.js'
 import { APIError } from '../utils/errors.js'
 
 // Reserved local-dev sentinel from scripts/dev/build-local-config.mjs (.dev.vars).
@@ -67,11 +75,15 @@ function kountPaymentIntentData(kount) {
   return kount ? { payment_intent_data: { capture_method: 'manual' } } : {}
 }
 
-/** What the customer should be told about an order placed on a held payment. */
-function orderStatus(paymentIntent) {
+/** The state of an order placed on a held payment. Undefined for automatic capture. */
+export function orderStatus(paymentIntent) {
   if (paymentIntent?.capture_method !== 'manual') return undefined
-  if (paymentIntent.status === 'succeeded') return 'confirmed'
   if (paymentIntent.status === 'canceled') return 'declined'
+  const decision = paymentIntent.metadata?.[KOUNT_DECISION_METADATA_KEY]
+  if (decision === KOUNT_REVIEW_DECISION) return ORDER_STATUS_ON_HOLD
+  if (paymentIntent.status === 'succeeded') {
+    return decision === KOUNT_DECLINE_DECISION ? ORDER_STATUS_REFUNDED : 'confirmed'
+  }
   return 'pending'
 }
 
@@ -368,6 +380,24 @@ export class StripeService {
     }, {
       idempotencyKey: `cancel_${paymentIntentId}`,
     })
+  }
+
+  /**
+   * Refund a captured payment that a Kount reviewer declined
+   */
+  async refundPaymentIntentAsFraudulent(paymentIntentId) {
+    try {
+      return await this.stripe.refunds.create({
+        payment_intent: paymentIntentId,
+        reason: 'fraudulent',
+      }, {
+        idempotencyKey: `refund_${paymentIntentId}`,
+      })
+    } catch (error) {
+      // A repeat delivery after the idempotency key has expired.
+      if (error.code === 'charge_already_refunded') return null
+      throw error
+    }
   }
 
   /**

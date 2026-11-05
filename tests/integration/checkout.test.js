@@ -1,5 +1,5 @@
 // Integration tests for checkout process
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { createTestApp, createTestRequest, executeRequest, parseJsonResponse, createStripePriceId, createStripeSessionId, createTestCartItems } from '../utils/test-helpers.js'
 import { createMockEnv, createMockKV } from '../setup.js'
 import Stripe from 'stripe'
@@ -17,6 +17,9 @@ vi.mock('stripe', () => {
     capture: vi.fn(),
     cancel: vi.fn()
   }
+  const mockRefunds = {
+    create: vi.fn()
+  }
   const mockWebhooks = {
     constructEventAsync: vi.fn()
   }
@@ -26,6 +29,7 @@ vi.mock('stripe', () => {
       sessions: mockCheckoutSessions
     },
     paymentIntents: mockPaymentIntents,
+    refunds: mockRefunds,
     webhooks: mockWebhooks
   }))
   StripeMock.createSubtleCryptoProvider = vi.fn()
@@ -177,12 +181,25 @@ describe('Checkout Process', () => {
       vi.unstubAllGlobals()
     })
 
-    it.each(['APPROVE', 'REVIEW'])('captures the held payment on %s', async (decision) => {
-      kountDecision(decision)
+    it('captures the held payment on APPROVE', async () => {
+      kountDecision('APPROVE')
 
       const response = await executeRequest(app, webhookRequest(), env)
 
       expect(response.status).toBe(200)
+      expect(mockStripe.paymentIntents.capture).toHaveBeenCalledTimes(1)
+      expect(mockStripe.paymentIntents.cancel).not.toHaveBeenCalled()
+    })
+
+    it('captures the payment on REVIEW and saves the decision that holds the order', async () => {
+      kountDecision('REVIEW')
+
+      const response = await executeRequest(app, webhookRequest(), env)
+
+      expect(response.status).toBe(200)
+      expect(mockStripe.paymentIntents.update).toHaveBeenCalledWith(paymentIntentId, {
+        metadata: expect.objectContaining({ kount_decision: 'REVIEW', kount_order_id: 'KOUNT1' })
+      })
       expect(mockStripe.paymentIntents.capture).toHaveBeenCalledTimes(1)
       expect(mockStripe.paymentIntents.cancel).not.toHaveBeenCalled()
     })
@@ -252,6 +269,114 @@ describe('Checkout Process', () => {
 
       expect(response.status).toBe(200)
       expect(mockStripe.checkout.sessions.retrieve).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('POST /api/kount-webhook', () => {
+    const ddcSite = 'https://kount-poc-run-110301.bdrhoa.workers.dev'
+    const event = { eventType: 'Order.StatusChange', fieldName: 'status', orderId: 'KOUNT1', merchantOrderId: 'cs_test_review', newValue: 'APPROVE' }
+    let keys
+
+    const heldSession = (metadata = { kount_order_id: 'KOUNT1', kount_decision: 'REVIEW' }) => ({
+      id: 'cs_test_review',
+      payment_intent: { id: 'pi_review', capture_method: 'manual', status: 'succeeded', metadata, latest_charge: { refunded: false } }
+    })
+
+    async function signedRequest(payload, { site = ddcSite, signWith = keys.privateKey, timestamp = new Date().toISOString() } = {}) {
+      const body = JSON.stringify(payload)
+      const signature = await crypto.subtle.sign(
+        { name: 'RSA-PSS', saltLength: 32 },
+        signWith,
+        new TextEncoder().encode(`${timestamp}${body}`)
+      )
+      return new Request(`${site}/api/kount-webhook`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Event-Timestamp': timestamp,
+          'X-Event-Signature': btoa(String.fromCharCode(...new Uint8Array(signature)))
+        },
+        body
+      })
+    }
+
+    beforeAll(async () => {
+      keys = await crypto.subtle.generateKey(
+        { name: 'RSA-PSS', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+        true,
+        ['sign', 'verify']
+      )
+    })
+
+    beforeEach(async () => {
+      const spki = await crypto.subtle.exportKey('spki', keys.publicKey)
+      env.KOUNT_WEBHOOK_PUBLIC_KEY = btoa(String.fromCharCode(...new Uint8Array(spki)))
+      env.KOUNT_API_KEY = 'kount_key'
+      mockStripe.checkout.sessions.retrieve.mockResolvedValue(heldSession())
+    })
+
+    it('releases an order on hold when the review approves it', async () => {
+      const response = await executeRequest(app, await signedRequest(event), env)
+
+      expect(response.status).toBe(200)
+      expect(mockStripe.paymentIntents.update).toHaveBeenCalledWith('pi_review', { metadata: { kount_decision: 'APPROVE' } })
+      expect(mockStripe.refunds.create).not.toHaveBeenCalled()
+    })
+
+    it('refunds an order on hold when the review declines it', async () => {
+      const response = await executeRequest(app, await signedRequest({ ...event, newValue: 'DECLINE' }), env)
+
+      expect(response.status).toBe(200)
+      expect(mockStripe.refunds.create).toHaveBeenCalledWith(
+        { payment_intent: 'pi_review', reason: 'fraudulent' },
+        { idempotencyKey: 'refund_pi_review' }
+      )
+    })
+
+    it('rejects a body that does not match its signature', async () => {
+      const signed = await signedRequest(event)
+      const tampered = new Request(signed.url, {
+        method: 'POST',
+        headers: signed.headers,
+        body: JSON.stringify({ ...event, newValue: 'DECLINE' })
+      })
+
+      const response = await executeRequest(app, tampered, env)
+
+      expect(response.status).toBe(400)
+      expect(mockStripe.refunds.create).not.toHaveBeenCalled()
+    })
+
+    it('rejects a delivery with no signature', async () => {
+      const response = await executeRequest(app, new Request(`${ddcSite}/api/kount-webhook`, {
+        method: 'POST',
+        body: JSON.stringify(event)
+      }), env)
+
+      expect(response.status).toBe(400)
+    })
+
+    it('refuses to run until it is configured', async () => {
+      delete env.KOUNT_WEBHOOK_PUBLIC_KEY
+
+      const response = await executeRequest(app, await signedRequest(event), env)
+
+      expect(response.status).toBe(503)
+    })
+
+    it('does not exist on other sites', async () => {
+      const response = await executeRequest(app, await signedRequest(event, { site: 'https://other.example.com' }), env)
+
+      expect(response.status).toBe(404)
+    })
+
+    it('fails so Kount retries when the evaluation is not saved yet', async () => {
+      mockStripe.checkout.sessions.retrieve.mockResolvedValue(heldSession({}))
+
+      const response = await executeRequest(app, await signedRequest({ ...event, newValue: 'DECLINE' }), env)
+
+      expect(response.status).toBe(503)
+      expect(mockStripe.refunds.create).not.toHaveBeenCalled()
     })
   })
 

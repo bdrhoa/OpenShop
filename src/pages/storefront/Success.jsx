@@ -16,6 +16,18 @@ const ORDER_MESSAGES = {
     title: 'Finishing your order',
     body: 'We are confirming your payment. Your card has not been charged yet.',
   },
+  on_hold: {
+    Icon: Clock,
+    iconClass: 'text-amber-500',
+    title: 'Your order is being reviewed',
+    body: 'Your payment went through, and your order is on hold while we review it. It will ship once the review is complete.',
+  },
+  refunded: {
+    Icon: XCircle,
+    iconClass: 'text-red-500',
+    title: 'We could not complete your order',
+    body: 'Your payment has been refunded. It can take a few business days to appear on your statement.',
+  },
   declined: {
     Icon: XCircle,
     iconClass: 'text-red-500',

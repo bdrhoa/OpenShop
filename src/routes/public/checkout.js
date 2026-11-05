@@ -2,6 +2,7 @@
 import { Hono } from 'hono'
 import { StripeService } from '../../services/StripeService.js'
 import { KountService, settleHeldCheckout } from '../../services/KountService.js'
+import { processKountOrderEvent, verifyKountWebhook } from '../../services/KountWebhookService.js'
 import { asyncHandler } from '../../middleware/errorHandler.js'
 import { APIError, NotFoundError, ValidationError } from '../../utils/errors.js'
 import { getClientIp, parseJsonBody } from '../../utils/request.js'
@@ -145,6 +146,7 @@ router.get('/checkout-session/:sessionId', asyncHandler(async (c) => {
 }))
 
 // Stripe webhook: evaluates a held payment with Kount, then captures or cancels it.
+// REVIEW captures, and the order stays on hold until the Kount webhook resolves it.
 // Any failure returns an error so Stripe retries. Until then the payment stays
 // held, and an authorization that is never captured expires uncharged.
 router.post('/stripe-webhook', asyncHandler(async (c) => {
@@ -182,6 +184,49 @@ router.post('/stripe-webhook', asyncHandler(async (c) => {
   }
 
   return c.json({ received: true })
+}))
+
+// Kount webhook: resolves an order on hold for review, releasing it to ship or
+// refunding its payment. Any failure returns an error so Kount retries, and the
+// order stays on hold until then.
+router.post('/kount-webhook', asyncHandler(async (c) => {
+  if (!isKountSite(c)) {
+    throw new NotFoundError('Not found')
+  }
+  if (!c.env.KOUNT_WEBHOOK_PUBLIC_KEY || !c.env.KOUNT_API_KEY) {
+    throw new APIError('Webhook is not configured', 503)
+  }
+
+  const rawBody = await c.req.text()
+  const verified = await verifyKountWebhook({
+    rawBody,
+    signature: c.req.header('x-event-signature'),
+    timestamp: c.req.header('x-event-timestamp'),
+    publicKey: c.env.KOUNT_WEBHOOK_PUBLIC_KEY,
+  })
+  if (!verified) {
+    throw new ValidationError('Invalid Kount signature')
+  }
+
+  let event
+  try {
+    event = JSON.parse(rawBody)
+  } catch {
+    throw new ValidationError('Invalid Kount event')
+  }
+
+  const stripeService = new StripeService(
+    await resolveSetting(getKVNamespace(c.env), c.env, 'STRIPE_SECRET_KEY'),
+    await resolveSetting(getKVNamespace(c.env), c.env, 'SITE_URL'),
+  )
+  stripeService.assertCheckoutAvailable()
+
+  const result = await processKountOrderEvent({
+    stripeService,
+    kountService: new KountService(c.env.KOUNT_API_KEY),
+    event,
+  })
+  return c.json({ received: true, outcome: result.outcome })
 }))
 
 export default router

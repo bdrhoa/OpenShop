@@ -140,11 +140,24 @@ describe('settleHeldCheckout', () => {
     kountService = { evaluateOrder: vi.fn() }
   })
 
-  it.each(['APPROVE', 'REVIEW'])('captures on %s', async (decision) => {
-    kountService.evaluateOrder.mockResolvedValue({ orderId: 'K1', decision })
+  it('captures on APPROVE', async () => {
+    kountService.evaluateOrder.mockResolvedValue({ orderId: 'K1', decision: 'APPROVE' })
 
-    await expect(settle()).resolves.toEqual({ decision, outcome: 'captured' })
+    await expect(settle()).resolves.toEqual({ decision: 'APPROVE', outcome: 'captured' })
 
+    expect(stripeService.capturePaymentIntent).toHaveBeenCalledWith('pi_test_1')
+    expect(stripeService.cancelPaymentIntentAsFraudulent).not.toHaveBeenCalled()
+  })
+
+  it('captures on REVIEW and leaves the order on hold', async () => {
+    kountService.evaluateOrder.mockResolvedValue({ orderId: 'K1', decision: 'REVIEW' })
+
+    await expect(settle()).resolves.toEqual({ decision: 'REVIEW', outcome: 'on_hold' })
+
+    expect(stripeService.updatePaymentIntentMetadata).toHaveBeenCalledWith('pi_test_1', expect.objectContaining({
+      kount_order_id: 'K1',
+      kount_decision: 'REVIEW',
+    }))
     expect(stripeService.capturePaymentIntent).toHaveBeenCalledWith('pi_test_1')
     expect(stripeService.cancelPaymentIntentAsFraudulent).not.toHaveBeenCalled()
   })
@@ -183,7 +196,7 @@ describe('settleHeldCheckout', () => {
 
   it('resumes from a saved decision without evaluating again', async () => {
     stripeService.getCheckoutSessionForRiskEvaluation.mockResolvedValue(
-      heldSession({ metadata: { kount_decision: 'REVIEW' } }),
+      heldSession({ metadata: { kount_decision: 'APPROVE' } }),
     )
 
     await settle()

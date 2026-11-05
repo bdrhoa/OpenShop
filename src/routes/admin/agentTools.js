@@ -212,7 +212,7 @@ export const TOOL_DEFINITIONS = [
   }),
   fn('list_orders', 'List checkout orders for fulfillment', {
     limit: { type: 'number', description: 'Max 50, default 25' },
-    status: { type: 'string', enum: ['open', 'fulfilled'], description: 'open (unfulfilled) or fulfilled' },
+    status: { type: 'string', enum: ['open', 'fulfilled', 'on_hold'], description: 'open (unfulfilled), fulfilled, or on_hold (paid, awaiting a fraud review; cannot be fulfilled)' },
   }),
   fn('fulfill_order', 'Mark an order as fulfilled', {
     orderId: { type: 'string' },

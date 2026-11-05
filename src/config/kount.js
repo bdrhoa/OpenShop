@@ -24,9 +24,20 @@ export const KOUNT_USER_IP_METADATA_KEY = 'kount_user_ip'
 export const KOUNT_ORDER_ID_METADATA_KEY = 'kount_order_id'
 export const KOUNT_DECISION_METADATA_KEY = 'kount_decision'
 
+/** Captures the payment, but the order is on hold until a Kount webhook resolves it. */
+export const KOUNT_REVIEW_DECISION = 'REVIEW'
+export const KOUNT_DECLINE_DECISION = 'DECLINE'
 /** The only decisions that release a held payment. Anything else cancels it. */
-export const KOUNT_CAPTURE_DECISIONS = ['APPROVE', 'REVIEW']
-export const KOUNT_DECISIONS = [...KOUNT_CAPTURE_DECISIONS, 'DECLINE']
+export const KOUNT_CAPTURE_DECISIONS = ['APPROVE', KOUNT_REVIEW_DECISION]
+export const KOUNT_DECISIONS = [...KOUNT_CAPTURE_DECISIONS, KOUNT_DECLINE_DECISION]
+
+/** A captured order that may not ship until a reviewer approves it. */
+export const ORDER_STATUS_ON_HOLD = 'on_hold'
+/** A captured order that a reviewer declined, so its payment is refunded. */
+export const ORDER_STATUS_REFUNDED = 'refunded'
+
+/** Kount's guide recommends this window, so that its retries still verify. */
+export const KOUNT_WEBHOOK_MAX_AGE_MS = 45 * 60 * 1000
 
 const KOUNT_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/
 
