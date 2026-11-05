@@ -152,9 +152,9 @@ The DDC runs only on the exact hostname in `KOUNT_DDC_HOST` (`src/config/kount.j
 | Behaviour | Where |
 |-----------|-------|
 | Collection starts on the first storefront page load (not `/admin`) | `src/lib/kountDdc.js`, called from `src/main.jsx` |
-| Session ID persists in `localStorage` across tabs and the Stripe redirect | `src/lib/kountDdc.js` |
+| One session ID covers the web session, including every tab, Stripe redirect and order in it, using a first-party session cookie | `src/lib/kountDdc.js` |
 | Session ID is saved to the Stripe Checkout Session as `metadata.kount_session_id`, and sent to Kount as `deviceSessionId` | `src/routes/public/checkout.js`, `src/services/StripeService.js`, `src/services/KountService.js` |
-| Session ID rotates after a completed checkout, or after 24 hours away | `src/lib/kountDdc.js` |
+| A new session ID starts when the browser is closed and reopened, or once the ID is more than 15 minutes old (measured from creation, not idle time) | `src/lib/kountDdc.js` |
 | Collector origin is allowed in `connect-src` and `frame-src` | `src/middleware/securityHeaders.js` |
 
 `/` is served directly by Workers Assets without Worker headers; deep links such as `/products/:id` get the Worker CSP. Test the DDC on both.

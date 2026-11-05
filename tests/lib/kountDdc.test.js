@@ -1,19 +1,31 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { KOUNT_DDC_HOST, isValidKountSessionId } from '../../src/config/kount.js'
 
-const sdkInstance = { NewSession: vi.fn() }
-const kountSDK = vi.fn(() => sdkInstance)
+const kountSDK = vi.fn((_, sessionID) => ({
+  sessionID,
+  NewSession: vi.fn(function newSession(id) { this.sessionID = id }),
+}))
 vi.mock('@kount/kount-web-client-sdk', () => ({ default: kountSDK }))
 
-const DAY_MS = 24 * 60 * 60 * 1000
-const STORAGE_KEY = 'openshop-kount-session'
+const MINUTE_MS = 60 * 1000
+const COOKIE_NAME = 'openshop_kount_session'
 
-function createStorage() {
-  const values = new Map()
+// Mimics a browser cookie jar, keeping attributes so tests can inspect them.
+function createCookieJar() {
+  const cookies = new Map()
   return {
-    getItem: (key) => values.get(key) ?? null,
-    setItem: (key, value) => values.set(key, value),
-    removeItem: (key) => values.delete(key),
+    attributes: () => [...cookies.values()].map((cookie) => cookie.attributes).join('; '),
+    clear: () => cookies.clear(),
+    document: {
+      get cookie() {
+        return [...cookies.entries()].map(([name, { value }]) => `${name}=${value}`).join('; ')
+      },
+      set cookie(raw) {
+        const [pair, ...attributes] = raw.split('; ')
+        const [name, value] = pair.split('=')
+        cookies.set(name, { value, attributes: attributes.join('; ') })
+      },
+    },
   }
 }
 
@@ -24,10 +36,16 @@ async function loadPage({ hostname = KOUNT_DDC_HOST, pathname = '/' } = {}) {
   return import('../../src/lib/kountDdc.js')
 }
 
+const latestSdk = () => kountSDK.mock.results.at(-1).value
+
 describe('Kount DDC client', () => {
+  let cookieJar
+
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.stubGlobal('localStorage', createStorage())
+    vi.useFakeTimers()
+    cookieJar = createCookieJar()
+    vi.stubGlobal('document', cookieJar.document)
     vi.stubEnv('VITE_KOUNT_CLIENT_ID', '123456')
   })
 
@@ -66,7 +84,7 @@ describe('Kount DDC client', () => {
     expect(kountSDK).not.toHaveBeenCalled()
     expect(ddc.getKountSessionId()).toBeNull()
     expect(ddc.withKountSession({ priceId: 'price_1' })).toEqual({ priceId: 'price_1' })
-    expect(globalThis.localStorage.getItem(STORAGE_KEY)).toBeNull()
+    expect(cookieJar.document.cookie).toBe('')
   })
 
   it('does nothing without a client ID', async () => {
@@ -82,6 +100,15 @@ describe('Kount DDC client', () => {
     expect(kountSDK).not.toHaveBeenCalled()
   })
 
+  it('uses a browser-session cookie so the ID ends with the browser', async () => {
+    const ddc = await loadPage()
+    await ddc.startKountDdc()
+
+    expect(cookieJar.document.cookie).toContain(`${COOKIE_NAME}=${ddc.getKountSessionId()}.`)
+    expect(cookieJar.attributes()).not.toMatch(/expires|max-age/i)
+    expect(cookieJar.attributes()).toContain('Secure')
+  })
+
   it('keeps the same session ID across full page loads', async () => {
     const landing = await loadPage()
     await landing.startKountDdc()
@@ -94,60 +121,106 @@ describe('Kount DDC client', () => {
     expect(returnFromStripe.getKountSessionId()).toBe(sessionId)
   })
 
-  it('adds the session ID to checkout requests', async () => {
+  it('uses the same session ID for several orders in one web session', async () => {
+    const firstOrder = await loadPage()
+    await firstOrder.startKountDdc()
+    const firstBody = firstOrder.withKountSession({ priceId: 'price_1' })
+
+    vi.advanceTimersByTime(5 * MINUTE_MS)
+    const afterPayment = await loadPage({ pathname: '/success' })
+    await afterPayment.startKountDdc()
+    const secondBody = afterPayment.withKountSession({ priceId: 'price_2' })
+
+    expect(secondBody.kountSessionId).toBe(firstBody.kountSessionId)
+    expect(latestSdk().NewSession).not.toHaveBeenCalled()
+  })
+
+  it('starts a new session ID when the browser is closed and reopened', async () => {
+    const beforeClose = await loadPage()
+    await beforeClose.startKountDdc()
+    const sessionId = beforeClose.getKountSessionId()
+
+    cookieJar.clear()
+    const afterReopen = await loadPage()
+    await afterReopen.startKountDdc()
+
+    expect(afterReopen.getKountSessionId()).not.toBe(sessionId)
+  })
+
+  it('keeps the ID at exactly 15 minutes and replaces it after that', async () => {
     const ddc = await loadPage()
     await ddc.startKountDdc()
-    expect(ddc.withKountSession({ priceId: 'price_1' })).toEqual({
-      priceId: 'price_1',
-      kountSessionId: kountSDK.mock.calls[0][1],
-    })
+    const sessionId = ddc.getKountSessionId()
+
+    vi.advanceTimersByTime(15 * MINUTE_MS)
+    expect(ddc.getKountSessionId()).toBe(sessionId)
+
+    vi.advanceTimersByTime(1)
+    expect(ddc.getKountSessionId()).not.toBe(sessionId)
   })
 
-  it('starts a new session ID after a long absence', async () => {
-    vi.useFakeTimers()
-    const firstVisit = await loadPage()
-    await firstVisit.startKountDdc()
-    const sessionId = firstVisit.getKountSessionId()
-
-    vi.advanceTimersByTime(DAY_MS + 1)
-    const secondVisit = await loadPage()
-    await secondVisit.startKountDdc()
-
-    expect(secondVisit.getKountSessionId()).not.toBe(sessionId)
-  })
-
-  it('rotates after the order that used the current session ID', async () => {
-    const ddc = await loadPage({ pathname: '/success' })
+  it('counts age from creation, so activity does not extend the session', async () => {
+    const ddc = await loadPage()
     await ddc.startKountDdc()
-    const orderSessionId = ddc.getKountSessionId()
+    const sessionId = ddc.getKountSessionId()
 
-    await ddc.rotateKountSessionAfterOrder(orderSessionId)
+    for (let minute = 0; minute < 15; minute += 1) {
+      vi.advanceTimersByTime(MINUTE_MS)
+      ddc.withKountSession({ priceId: 'price_1' })
+    }
+    vi.advanceTimersByTime(1)
 
-    const nextSessionId = ddc.getKountSessionId()
-    expect(nextSessionId).not.toBe(orderSessionId)
-    expect(sdkInstance.NewSession).toHaveBeenCalledWith(nextSessionId)
+    expect(ddc.getKountSessionId()).not.toBe(sessionId)
   })
 
-  it('does not rotate again when the success page is reloaded', async () => {
-    const ddc = await loadPage({ pathname: '/success' })
+  it('starts a new ID on page load when the session is too old', async () => {
+    const firstPage = await loadPage()
+    await firstPage.startKountDdc()
+    const sessionId = firstPage.getKountSessionId()
+
+    vi.advanceTimersByTime(15 * MINUTE_MS + 1)
+    const nextPage = await loadPage()
+    await nextPage.startKountDdc()
+
+    expect(kountSDK.mock.calls.at(-1)[1]).not.toBe(sessionId)
+  })
+
+  it('renews collection on an open page without waiting for checkout', async () => {
+    const ddc = await loadPage()
     await ddc.startKountDdc()
-    const orderSessionId = ddc.getKountSessionId()
-    await ddc.rotateKountSessionAfterOrder(orderSessionId)
-    const nextSessionId = ddc.getKountSessionId()
+    const sdk = latestSdk()
 
-    const reloaded = await loadPage({ pathname: '/success' })
-    await reloaded.startKountDdc()
-    sdkInstance.NewSession.mockClear()
-    await reloaded.rotateKountSessionAfterOrder(orderSessionId)
+    vi.advanceTimersByTime(15 * MINUTE_MS + 1)
 
-    expect(reloaded.getKountSessionId()).toBe(nextSessionId)
-    expect(sdkInstance.NewSession).not.toHaveBeenCalled()
+    expect(sdk.NewSession).toHaveBeenCalledTimes(1)
+    expect(sdk.sessionID).toBe(ddc.getKountSessionId())
+
+    vi.advanceTimersByTime(15 * MINUTE_MS + 1)
+    expect(sdk.NewSession).toHaveBeenCalledTimes(2)
   })
 
-  it('keeps working when storage is blocked', async () => {
-    vi.stubGlobal('localStorage', {
-      getItem: () => { throw new Error('blocked') },
-      setItem: () => { throw new Error('blocked') },
+  it('moves to a new ID created in another tab', async () => {
+    const ddc = await loadPage()
+    await ddc.startKountDdc()
+    const sdk = latestSdk()
+
+    cookieJar.document.cookie = `${COOKIE_NAME}=othertabsession.${Date.now()}; Path=/`
+
+    expect(ddc.getKountSessionId()).toBe('othertabsession')
+    expect(sdk.NewSession).toHaveBeenCalledWith('othertabsession')
+  })
+
+  it('ignores a malformed cookie', async () => {
+    cookieJar.document.cookie = `${COOKIE_NAME}=not valid!.notatime; Path=/`
+    const ddc = await loadPage()
+    await ddc.startKountDdc()
+    expect(isValidKountSessionId(ddc.getKountSessionId())).toBe(true)
+  })
+
+  it('keeps working when cookies are blocked', async () => {
+    vi.stubGlobal('document', {
+      get cookie() { throw new Error('blocked') },
+      set cookie(_) { throw new Error('blocked') },
     })
     const ddc = await loadPage()
     await ddc.startKountDdc()

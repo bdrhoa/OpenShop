@@ -329,7 +329,6 @@ export class StripeService {
       status: session.status,
       order_status: orderStatus(session.payment_intent),
       created: session.created,
-      kount_session_id: session.metadata?.[KOUNT_SESSION_METADATA_KEY],
     }
   }
 

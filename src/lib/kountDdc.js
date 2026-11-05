@@ -1,14 +1,15 @@
 // Kount Device Data Collector (DDC) client.
 //
-// One session ID follows the customer from their first page load, across tabs
-// and through the hosted Stripe Checkout redirect. Kount requires a unique ID
-// per risk assessment, so it changes only after a paid order or a long absence.
+// One session ID covers a web session: every page, tab, Stripe Checkout
+// redirect and order within it. A session cookie ends with the browser, and the
+// ID is replaced once it is more than 15 minutes old.
 import { KOUNT_DDC_ENVIRONMENT, isKountDdcHost, isValidKountSessionId } from '../config/kount.js'
 
-const STORAGE_KEY = 'openshop-kount-session'
-const VISIT_EXPIRY_MS = 24 * 60 * 60 * 1000
+const COOKIE_NAME = 'openshop_kount_session'
+const SESSION_MAX_AGE_MS = 15 * 60 * 1000
 
-let memorySessionId = null
+let memorySession = null
+let sdk = null
 let sdkPromise = null
 
 function clientId() {
@@ -19,33 +20,40 @@ function isDdcEnabled() {
   return Boolean(clientId()) && isKountDdcHost(window.location.hostname)
 }
 
-function createSessionId() {
-  return crypto.randomUUID().replaceAll('-', '')
-}
-
-function readStoredSession() {
+function readCookieSession() {
   try {
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY))
-    return isValidKountSessionId(stored?.id) ? stored : null
+    const cookie = document.cookie.split('; ').find((entry) => entry.startsWith(`${COOKIE_NAME}=`))
+    const [id, createdAt] = (cookie?.slice(COOKIE_NAME.length + 1) ?? '').split('.')
+    return isValidKountSessionId(id) && Number(createdAt) > 0
+      ? { id, createdAt: Number(createdAt) }
+      : null
   } catch {
     return null
   }
 }
 
-function storeSession(id) {
-  memorySessionId = id
+function createSession() {
+  const session = { id: crypto.randomUUID().replaceAll('-', ''), createdAt: Date.now() }
+  memorySession = session
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ id, lastSeen: Date.now() }))
+    // No Expires or Max-Age: the browser must drop this cookie when it closes.
+    document.cookie = `${COOKIE_NAME}=${session.id}.${session.createdAt}; Path=/; SameSite=Lax; Secure`
   } catch {
-    // Storage can be blocked; the ID then lasts for this page load only.
+    // Cookies can be blocked; the ID then lasts for this page load only.
   }
+  return session
+}
+
+function currentSession() {
+  const session = readCookieSession() ?? memorySession
+  return session && Date.now() - session.createdAt <= SESSION_MAX_AGE_MS ? session : createSession()
 }
 
 /** Current session ID, or null when the DDC does not run on this site. */
 export function getKountSessionId() {
   if (!isDdcEnabled()) return null
-  const id = readStoredSession()?.id ?? memorySessionId ?? createSessionId()
-  storeSession(id)
+  const { id } = currentSession()
+  if (sdk && sdk.sessionID !== id) sdk.NewSession(id)
   return id
 }
 
@@ -55,39 +63,33 @@ export function withKountSession(body) {
   return kountSessionId ? { ...body, kountSessionId } : body
 }
 
+// Renews on time so collection for the new ID can finish before checkout.
+function keepSessionCurrent() {
+  getKountSessionId()
+  const { createdAt } = currentSession()
+  setTimeout(keepSessionCurrent, createdAt + SESSION_MAX_AGE_MS - Date.now() + 1)
+}
+
 /** Starts collection once per page load. Failures never affect the storefront. */
 export function startKountDdc() {
   if (sdkPromise || !isDdcEnabled() || window.location.pathname.startsWith('/admin')) {
     return sdkPromise
   }
 
-  const stored = readStoredSession()
-  if (stored && Date.now() - stored.lastSeen > VISIT_EXPIRY_MS) {
-    storeSession(createSessionId())
-  }
-
   const sessionID = getKountSessionId()
   sdkPromise = import('@kount/kount-web-client-sdk')
-    .then(({ default: kountSDK }) => kountSDK({
-      clientID: clientId(),
-      environment: KOUNT_DDC_ENVIRONMENT,
-      isSinglePageApp: true,
-    }, sessionID))
+    .then(({ default: kountSDK }) => {
+      sdk = kountSDK({
+        clientID: clientId(),
+        environment: KOUNT_DDC_ENVIRONMENT,
+        isSinglePageApp: true,
+      }, sessionID)
+      if (sdk) keepSessionCurrent()
+      return sdk
+    })
     .catch((error) => {
       console.warn('Kount DDC failed to load:', error)
       return null
     })
   return sdkPromise
-}
-
-/**
- * Moves to a new session ID once an order has used the current one. Comparing
- * IDs makes this safe to repeat when the success page is reloaded.
- */
-export async function rotateKountSessionAfterOrder(orderSessionId) {
-  if (!orderSessionId || getKountSessionId() !== orderSessionId) return
-  const nextId = createSessionId()
-  storeSession(nextId)
-  const sdk = await sdkPromise
-  sdk?.NewSession(nextId)
 }

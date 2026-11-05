@@ -3,7 +3,6 @@ import { useSearchParams, Link } from 'react-router-dom'
 import { Button } from '../../components/ui/button'
 import { Footer } from '../../components/storefront/Footer'
 import { CheckCircle, Clock, Package, ArrowLeft, XCircle } from 'lucide-react'
-import { rotateKountSessionAfterOrder } from '../../lib/kountDdc'
 
 // A held payment settles when the Stripe webhook arrives, usually within seconds.
 const ORDER_POLL_INTERVAL_MS = 2000
@@ -64,11 +63,6 @@ export function Success() {
         if (response.ok && !stopped) {
           const data = await response.json()
           setSessionData(data)
-          // The order has used this session ID once checkout completes, whatever
-          // Kount decides, so the next order must not reuse it.
-          if (data.status === 'complete' || data.payment_status === 'paid') {
-            rotateKountSessionAfterOrder(data.kount_session_id)
-          }
           if (data.order_status === 'pending' && attempts < ORDER_POLL_ATTEMPTS) {
             attempts += 1
             timer = setTimeout(fetchSessionData, ORDER_POLL_INTERVAL_MS)
