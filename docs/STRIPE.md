@@ -87,30 +87,28 @@ product once. A product still carrying placeholder ids is created in Stripe
 on that save, and its real product and price ids are written back to KV.
 Products created after the key is set behave normally.
 
-## Webhook Setup (Optional)
+## Kount Risk Evaluation and Manual Capture
 
-Webhooks allow you to track order completion and payment events in real-time.
+The site in `KOUNT_DDC_HOST` (`src/config/kount.js`) uses manual capture, so a payment is charged only if Kount allows it. All other sites keep automatic capture and have no webhook route.
 
-### Setting Up Webhooks
+Hosted Checkout collects the card and authorizes it on Stripe's page, so OpenShop cannot run a check between card entry and authorization. Instead, Kount evaluates the order after authorization and before capture. That is the first point at which the email, addresses and card details exist. In Kount's terms this is a post-authorization evaluation, and the order is sent with its authorization result.
 
-1. **Stripe Dashboard** → **Developers** → **Webhooks**
-2. **Add Endpoint**: `https://your-project.workers.dev/api/stripe-webhook`
-3. **Select Events**:
-   - `checkout.session.completed` - Fired when a checkout session is completed
-   - `payment_intent.succeeded` - Fired when a payment is successfully processed
+1. Checkout Sessions are created with `payment_intent_data.capture_method: 'manual'`, plus the DDC session ID and the buyer's IPv4 address in metadata.
+2. The customer pays. Stripe authorizes the card and the PaymentIntent moves to `requires_capture`.
+3. Stripe sends `checkout.session.completed` to `POST /api/stripe-webhook`, which verifies the signature.
+4. `settleHeldCheckout` (`src/services/KountService.js`) sends the order to Kount with `deviceSessionId` set to the DDC session ID, and saves `kount_order_id` and `kount_decision` on the PaymentIntent.
+5. `APPROVE` or `REVIEW` captures the payment. `DECLINE` cancels it, which releases the hold.
 
-### Webhook Security
+| Situation | Result |
+|-----------|--------|
+| Kount is unreachable, returns an error, or returns an unknown decision | Webhook returns an error, Stripe retries, and the payment stays held |
+| Webhook retried after a decision was saved | Kount is not called again; capture or cancel resumes |
+| Retries run out, or the webhook is not set up | Nothing is captured, and the authorization expires uncharged (usually after 7 days) |
+| A later Kount review outcome on a `REVIEW` order | Not handled: the payment is already captured, so refund it by hand |
 
-Stripe webhooks include a signature that verifies the request came from Stripe. OpenShop validates this signature to ensure webhook security.
+The success page polls `GET /api/checkout-session/:sessionId`, whose `order_status` is `pending`, `confirmed` or `declined`. Admin orders list only captured payments, so a held or declined order cannot be shipped by mistake.
 
-### Handling Webhook Events
-
-You can extend OpenShop to handle webhook events by modifying the webhook handler in `src/routes/public/checkout.js`. Common use cases:
-
-- Update order status in your system
-- Send confirmation emails
-- Update inventory
-- Trigger fulfillment processes
+Setup is in [CONFIGURATION.md](./CONFIGURATION.md#kount-risk-evaluation-single-site-proof-of-concept).
 
 ## Payment Flow
 
@@ -121,7 +119,6 @@ You can extend OpenShop to handle webhook events by modifying the webhook handle
 3. **Stripe Checkout** - Customer enters payment details on Stripe's secure page
 4. **Payment Processing** - Stripe processes the payment
 5. **Success Redirect** - Customer redirected to success page
-6. **Webhook Notification** - (Optional) Your server notified of payment completion
 
 ### Checkout Session Configuration
 
@@ -158,7 +155,7 @@ Use any future expiry date, any 3-digit CVC, and any postal code.
 
 - ✅ Never expose your secret key in client-side code
 - ✅ Always use HTTPS in production
-- ✅ Validate webhook signatures
+- ✅ Validate webhook signatures (`POST /api/stripe-webhook`)
 - ✅ Use test mode during development
 
 ### Performance

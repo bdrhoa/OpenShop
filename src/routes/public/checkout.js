@@ -1,9 +1,10 @@
 // Public checkout routes
 import { Hono } from 'hono'
 import { StripeService } from '../../services/StripeService.js'
+import { KountService, settleHeldCheckout } from '../../services/KountService.js'
 import { asyncHandler } from '../../middleware/errorHandler.js'
-import { ValidationError } from '../../utils/errors.js'
-import { parseJsonBody } from '../../utils/request.js'
+import { APIError, NotFoundError, ValidationError } from '../../utils/errors.js'
+import { getClientIp, parseJsonBody } from '../../utils/request.js'
 import { resolveSetting } from '../../services/DeveloperSettingsService.js'
 import { getKVNamespace } from '../../utils/kv.js'
 import { CART_MAX_ITEMS, CART_MAX_ITEM_QUANTITY } from '../../config/index.js'
@@ -11,10 +12,19 @@ import { isKountDdcHost, isValidKountSessionId } from '../../config/kount.js'
 
 const router = new Hono()
 
-// A bad session ID must never block a sale, so it is dropped rather than rejected.
-function resolveKountSessionId(c, value) {
-  const hostname = new URL(c.req.url).hostname
-  return isKountDdcHost(hostname) && isValidKountSessionId(value) ? value : undefined
+function isKountSite(c) {
+  return isKountDdcHost(new URL(c.req.url).hostname)
+}
+
+// Undefined on other sites, which keep automatic capture. A bad session ID must
+// never block a sale, so it is dropped: the order is still held and evaluated.
+function resolveKountCheckout(c, sessionId) {
+  if (!isKountSite(c)) return undefined
+  const clientIp = getClientIp(c)
+  return {
+    sessionId: isValidKountSessionId(sessionId) ? sessionId : undefined,
+    userIp: clientIp === 'unknown' ? undefined : clientIp,
+  }
 }
 
 // Create checkout session (single item)
@@ -46,7 +56,7 @@ router.post('/create-checkout-session', asyncHandler(async (c) => {
     await resolveSetting(getKVNamespace(c.env), c.env, 'STRIPE_SECRET_KEY'),
     await resolveSetting(getKVNamespace(c.env), c.env, 'SITE_URL'),
   )
-  const session = await stripeService.createCheckoutSession(trimmedPriceId, resolveKountSessionId(c, kountSessionId))
+  const session = await stripeService.createCheckoutSession(trimmedPriceId, resolveKountCheckout(c, kountSessionId))
   return c.json({ sessionId: session.id, url: session.url })
 }))
 
@@ -101,7 +111,7 @@ router.post('/create-cart-checkout-session', asyncHandler(async (c) => {
     await resolveSetting(getKVNamespace(c.env), c.env, 'STRIPE_SECRET_KEY'),
     await resolveSetting(getKVNamespace(c.env), c.env, 'SITE_URL'),
   )
-  const session = await stripeService.createCartCheckoutSession(normalizedItems, resolveKountSessionId(c, kountSessionId))
+  const session = await stripeService.createCartCheckoutSession(normalizedItems, resolveKountCheckout(c, kountSessionId))
   return c.json({ sessionId: session.id, url: session.url })
 }))
 
@@ -132,6 +142,46 @@ router.get('/checkout-session/:sessionId', asyncHandler(async (c) => {
   )
   const session = await stripeService.getCheckoutSession(trimmedSessionId)
   return c.json(session)
+}))
+
+// Stripe webhook: evaluates a held payment with Kount, then captures or cancels it.
+// Any failure returns an error so Stripe retries. Until then the payment stays
+// held, and an authorization that is never captured expires uncharged.
+router.post('/stripe-webhook', asyncHandler(async (c) => {
+  if (!isKountSite(c)) {
+    throw new NotFoundError('Not found')
+  }
+
+  const signature = c.req.header('stripe-signature')
+  if (!signature) {
+    throw new ValidationError('Missing Stripe signature')
+  }
+  if (!c.env.STRIPE_WEBHOOK_SECRET || !c.env.KOUNT_API_KEY) {
+    throw new APIError('Webhook is not configured', 503)
+  }
+
+  const stripeService = new StripeService(
+    await resolveSetting(getKVNamespace(c.env), c.env, 'STRIPE_SECRET_KEY'),
+    await resolveSetting(getKVNamespace(c.env), c.env, 'SITE_URL'),
+  )
+  stripeService.assertCheckoutAvailable()
+
+  let event
+  try {
+    event = await stripeService.constructWebhookEvent(await c.req.text(), signature, c.env.STRIPE_WEBHOOK_SECRET)
+  } catch {
+    throw new ValidationError('Invalid Stripe signature')
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    await settleHeldCheckout({
+      stripeService,
+      kountService: new KountService(c.env.KOUNT_API_KEY),
+      sessionId: event.data.object.id,
+    })
+  }
+
+  return c.json({ received: true })
 }))
 
 export default router

@@ -354,10 +354,11 @@ describe('StripeService', () => {
         selectedVariant2: { name: 'Color' },
       }))
 
-      const metadata = buildCartCheckoutMetadata(items, 'session123')
+      const metadata = buildCartCheckoutMetadata(items, { sessionId: 'session123', userIp: '203.0.113.7' })
 
       expect(Object.keys(metadata).length).toBeLessThanOrEqual(STRIPE_METADATA_KEY_LIMIT)
       expect(metadata.kount_session_id).toBe('session123')
+      expect(metadata.kount_user_ip).toBe('203.0.113.7')
       expect(metadata.overflow_item_count).toBe(String(20 - (CART_METADATA_DETAILED_ITEM_LIMIT - 1)))
     })
   })
@@ -399,7 +400,7 @@ describe('StripeService', () => {
         payment_status: 'paid',
         created: expect.any(Number)
       })
-      expect(mockStripe.checkout.sessions.retrieve).toHaveBeenCalledWith(sessionId)
+      expect(mockStripe.checkout.sessions.retrieve).toHaveBeenCalledWith(sessionId, { expand: ['payment_intent'] })
     })
 
     it('throws a clean error when Stripe is not configured', async () => {
@@ -471,7 +472,7 @@ describe('StripeService', () => {
         sessionId,
         {
           limit: 100,
-          expand: ['data.price']
+          expand: ['data.price.product']
         }
       )
     })

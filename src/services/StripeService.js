@@ -1,7 +1,7 @@
 // Stripe service - handles Stripe operations
 import Stripe from 'stripe'
 import { SHIPPING_COUNTRIES } from '../config/index.js'
-import { KOUNT_SESSION_METADATA_KEY } from '../config/kount.js'
+import { KOUNT_SESSION_METADATA_KEY, KOUNT_USER_IP_METADATA_KEY } from '../config/kount.js'
 import { APIError } from '../utils/errors.js'
 
 // Reserved local-dev sentinel from scripts/dev/build-local-config.mjs (.dev.vars).
@@ -54,12 +54,33 @@ function clipMeta(value) {
   return String(value || '').slice(0, 500)
 }
 
+/** Session metadata that the Kount evaluation reads after payment. */
+function kountMetadata(kount) {
+  return {
+    ...(kount?.sessionId && { [KOUNT_SESSION_METADATA_KEY]: kount.sessionId }),
+    ...(kount?.userIp && { [KOUNT_USER_IP_METADATA_KEY]: kount.userIp }),
+  }
+}
+
+/** Authorize only, so nothing is charged until Kount has evaluated the order. */
+function kountPaymentIntentData(kount) {
+  return kount ? { payment_intent_data: { capture_method: 'manual' } } : {}
+}
+
+/** What the customer should be told about an order placed on a held payment. */
+function orderStatus(paymentIntent) {
+  if (paymentIntent?.capture_method !== 'manual') return undefined
+  if (paymentIntent.status === 'succeeded') return 'confirmed'
+  if (paymentIntent.status === 'canceled') return 'declined'
+  return 'pending'
+}
+
 /**
  * Cart checkout metadata that never exceeds Stripe's 50-key limit.
  * @param {Array<{name?: string, quantity?: number, selectedVariant?: {name?: string}, selectedVariant2?: {name?: string}}>} items
- * @param {string} [kountSessionId] Takes the place of one detailed item, keeping the worst case within the limit.
+ * @param {{sessionId?: string, userIp?: string}} [kount] Its keys take the place of one detailed item, keeping the worst case within the limit.
  */
-export function buildCartCheckoutMetadata(items, kountSessionId) {
+export function buildCartCheckoutMetadata(items, kount) {
   const list = Array.isArray(items) ? items : []
   const metadata = {
     order_type: 'cart_checkout',
@@ -67,7 +88,8 @@ export function buildCartCheckoutMetadata(items, kountSessionId) {
     total_quantity: String(list.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0)),
   }
 
-  const detailedItemLimit = CART_METADATA_DETAILED_ITEM_LIMIT - (kountSessionId ? 1 : 0)
+  const extraMetadata = kountMetadata(kount)
+  const detailedItemLimit = CART_METADATA_DETAILED_ITEM_LIMIT - (Object.keys(extraMetadata).length > 0 ? 1 : 0)
   const detailed = list.slice(0, detailedItemLimit)
   detailed.forEach((item, index) => {
     metadata[`item_${index}_name`] = clipMeta(item.name || `Item ${index + 1}`)
@@ -84,11 +106,7 @@ export function buildCartCheckoutMetadata(items, kountSessionId) {
     metadata.overflow_item_count = String(list.length - detailedItemLimit)
   }
 
-  if (kountSessionId) {
-    metadata[KOUNT_SESSION_METADATA_KEY] = kountSessionId
-  }
-
-  return metadata
+  return { ...metadata, ...extraMetadata }
 }
 
 export class StripeService {
@@ -225,8 +243,10 @@ export class StripeService {
 
   /**
    * Create checkout session for single item
+   * @param {string} priceId
+   * @param {{sessionId?: string, userIp?: string}} [kount] Set on the Kount site: the payment is held for evaluation.
    */
-  async createCheckoutSession(priceId, kountSessionId) {
+  async createCheckoutSession(priceId, kount) {
     this.assertCheckoutAvailable()
     return await this.stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -238,14 +258,17 @@ export class StripeService {
       billing_address_collection: 'required',
       success_url: `${this.siteUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${this.siteUrl}/`,
-      ...(kountSessionId && { metadata: { [KOUNT_SESSION_METADATA_KEY]: kountSessionId } }),
+      ...(kount && { metadata: kountMetadata(kount) }),
+      ...kountPaymentIntentData(kount),
     })
   }
 
   /**
    * Create checkout session for cart
+   * @param {Array} items
+   * @param {{sessionId?: string, userIp?: string}} [kount] Set on the Kount site: the payment is held for evaluation.
    */
-  async createCartCheckoutSession(items, kountSessionId) {
+  async createCartCheckoutSession(items, kount) {
     this.assertCheckoutAvailable()
     const lineItems = items.map(item => {
       // When using price IDs, you cannot set description, name, images, etc. directly
@@ -272,7 +295,8 @@ export class StripeService {
       billing_address_collection: 'required',
       success_url: `${this.siteUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${this.siteUrl}/`,
-      metadata: buildCartCheckoutMetadata(items, kountSessionId),
+      metadata: buildCartCheckoutMetadata(items, kount),
+      ...kountPaymentIntentData(kount),
     })
   }
 
@@ -281,16 +305,69 @@ export class StripeService {
    */
   async getCheckoutSession(sessionId) {
     this.assertCheckoutAvailable()
-    const session = await this.stripe.checkout.sessions.retrieve(sessionId)
+    const session = await this.stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ['payment_intent'],
+    })
     return {
       id: session.id,
       amount_total: session.amount_total,
       currency: session.currency,
       customer_email: session.customer_details?.email,
       payment_status: session.payment_status,
+      status: session.status,
+      order_status: orderStatus(session.payment_intent),
       created: session.created,
       kount_session_id: session.metadata?.[KOUNT_SESSION_METADATA_KEY],
     }
+  }
+
+  /**
+   * Checkout session with the payment, charge and card details Kount needs
+   */
+  async getCheckoutSessionForRiskEvaluation(sessionId) {
+    return await this.stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ['payment_intent.latest_charge'],
+    })
+  }
+
+  /**
+   * Verify a webhook delivery. Workers needs the async, SubtleCrypto-based check.
+   */
+  async constructWebhookEvent(rawBody, signature, webhookSecret) {
+    return await this.stripe.webhooks.constructEventAsync(
+      rawBody,
+      signature,
+      webhookSecret,
+      undefined,
+      Stripe.createSubtleCryptoProvider(),
+    )
+  }
+
+  /**
+   * Merge metadata onto a payment intent
+   */
+  async updatePaymentIntentMetadata(paymentIntentId, metadata) {
+    return await this.stripe.paymentIntents.update(paymentIntentId, { metadata })
+  }
+
+  /**
+   * Capture a held payment
+   */
+  async capturePaymentIntent(paymentIntentId) {
+    return await this.stripe.paymentIntents.capture(paymentIntentId, {}, {
+      idempotencyKey: `capture_${paymentIntentId}`,
+    })
+  }
+
+  /**
+   * Release a held payment that failed risk evaluation
+   */
+  async cancelPaymentIntentAsFraudulent(paymentIntentId) {
+    return await this.stripe.paymentIntents.cancel(paymentIntentId, {
+      cancellation_reason: 'fraudulent',
+    }, {
+      idempotencyKey: `cancel_${paymentIntentId}`,
+    })
   }
 
   /**
@@ -318,7 +395,7 @@ export class StripeService {
   async getCheckoutSessionLineItems(sessionId) {
     return await this.stripe.checkout.sessions.listLineItems(sessionId, { 
       limit: 100, 
-      expand: ['data.price'] 
+      expand: ['data.price.product'] 
     })
   }
 

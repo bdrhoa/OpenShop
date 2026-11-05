@@ -153,11 +153,24 @@ The DDC runs only on the exact hostname in `KOUNT_DDC_HOST` (`src/config/kount.j
 |-----------|-------|
 | Collection starts on the first storefront page load (not `/admin`) | `src/lib/kountDdc.js`, called from `src/main.jsx` |
 | Session ID persists in `localStorage` across tabs and the Stripe redirect | `src/lib/kountDdc.js` |
-| Session ID is saved to the Stripe Checkout Session as `metadata.kount_session_id`, for use as `deviceSessionId` | `src/routes/public/checkout.js`, `src/services/StripeService.js` |
-| Session ID rotates after a paid order, or after 24 hours away | `src/lib/kountDdc.js` |
+| Session ID is saved to the Stripe Checkout Session as `metadata.kount_session_id`, and sent to Kount as `deviceSessionId` | `src/routes/public/checkout.js`, `src/services/StripeService.js`, `src/services/KountService.js` |
+| Session ID rotates after a completed checkout, or after 24 hours away | `src/lib/kountDdc.js` |
 | Collector origin is allowed in `connect-src` and `frame-src` | `src/middleware/securityHeaders.js` |
 
 `/` is served directly by Workers Assets without Worker headers; deep links such as `/products/:id` get the Worker CSP. Test the DDC on both.
+
+### Kount risk evaluation (single-site proof of concept)
+
+On the same host, Stripe only places a hold on the card, and Kount decides whether it is captured. See [STRIPE.md](./STRIPE.md#kount-risk-evaluation-and-manual-capture) for the flow. It needs two Worker secrets and one Stripe webhook endpoint:
+
+```bash
+wrangler secret put KOUNT_API_KEY --config toml/kount-poc-run-110301.toml
+wrangler secret put STRIPE_WEBHOOK_SECRET --config toml/kount-poc-run-110301.toml
+```
+
+In Stripe, add the endpoint `https://kount-poc-run-110301.bdrhoa.workers.dev/api/stripe-webhook` for the `checkout.session.completed` event. Its signing secret is `STRIPE_WEBHOOK_SECRET`.
+
+Without these, checkout still works but every order stays on hold: nothing is captured, and each authorization expires uncharged. The Kount endpoints in `src/config/kount.js` are Sandbox.
 
 ### Google Drive Integration
 

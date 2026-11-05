@@ -193,7 +193,7 @@ export class AnalyticsService {
         const lineItemsPromise = this.stripe.getCheckoutSessionLineItems(s.id)
         let paymentIntentPromise = Promise.resolve(null)
 
-        if (!s.shipping_details && s.payment_intent) {
+        if (s.payment_intent) {
           paymentIntentPromise = this.stripe.getPaymentIntent(s.payment_intent)
             .catch(piError => {
               console.log('Error fetching payment intent shipping:', piError.message)
@@ -232,6 +232,7 @@ export class AnalyticsService {
           customer_name: s.customer_details?.name || null,
           shipping: shippingDetails,
           payment_intent: s.payment_intent || null,
+          payment_intent_status: paymentIntent?.status ?? null,
           billing: {
             name: s.customer_details?.name || null,
             email: s.customer_details?.email || null,
@@ -305,9 +306,15 @@ export class AnalyticsService {
     const nextCursor = ordered.length > 0 ? ordered[0].id : null
     const prevCursor = ordered.length > 0 ? ordered[ordered.length - 1].id : null
 
+    // A held payment is not a sale until captured, and a canceled one never will
+    // be. Neither may appear as an order that is ready to ship.
+    const payableOrders = orders.filter(
+      (order) => !['requires_capture', 'canceled'].includes(order.payment_intent_status),
+    )
+
     return {
       limit,
-      orders,
+      orders: payableOrders,
       cursors: { next: nextCursor, prev: prevCursor },
       has_more: sessions.has_more
     }

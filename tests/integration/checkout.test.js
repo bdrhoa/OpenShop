@@ -1,23 +1,36 @@
 // Integration tests for checkout process
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTestApp, createTestRequest, executeRequest, parseJsonResponse, createStripePriceId, createStripeSessionId, createTestCartItems } from '../utils/test-helpers.js'
 import { createMockEnv, createMockKV } from '../setup.js'
 import Stripe from 'stripe'
+import { resetKountTokenCache } from '../../src/services/KountService.js'
 
 // Mock Stripe
 vi.mock('stripe', () => {
   const mockCheckoutSessions = {
     create: vi.fn(),
-    retrieve: vi.fn()
+    retrieve: vi.fn(),
+    listLineItems: vi.fn()
+  }
+  const mockPaymentIntents = {
+    update: vi.fn(),
+    capture: vi.fn(),
+    cancel: vi.fn()
+  }
+  const mockWebhooks = {
+    constructEventAsync: vi.fn()
   }
 
-  return {
-    default: vi.fn(() => ({
-      checkout: {
-        sessions: mockCheckoutSessions
-      }
-    }))
-  }
+  const StripeMock = vi.fn(() => ({
+    checkout: {
+      sessions: mockCheckoutSessions
+    },
+    paymentIntents: mockPaymentIntents,
+    webhooks: mockWebhooks
+  }))
+  StripeMock.createSubtleCryptoProvider = vi.fn()
+
+  return { default: StripeMock }
 })
 
 describe('Checkout Process', () => {
@@ -59,6 +72,19 @@ describe('Checkout Process', () => {
 
       expect(response.status).toBe(200)
       expect(createdMetadata()).toEqual({ kount_session_id: kountSessionId })
+      expect(mockStripe.checkout.sessions.create.mock.calls[0][0].payment_intent_data).toEqual({ capture_method: 'manual' })
+    })
+
+    it('records the IPv4 address of the buyer for the risk evaluation', async () => {
+      const request = createTestRequest(`${ddcSite}/api/create-checkout-session`, {
+        method: 'POST',
+        headers: { 'CF-Connecting-IP': '203.0.113.7' },
+        body: { priceId: createStripePriceId(), kountSessionId }
+      })
+
+      await executeRequest(app, request, env)
+
+      expect(createdMetadata().kount_user_ip).toBe('203.0.113.7')
     })
 
     it('stores the ID on cart checkout for the DDC site', async () => {
@@ -71,6 +97,7 @@ describe('Checkout Process', () => {
 
       expect(response.status).toBe(200)
       expect(createdMetadata().kount_session_id).toBe(kountSessionId)
+      expect(mockStripe.checkout.sessions.create.mock.calls[0][0].payment_intent_data).toEqual({ capture_method: 'manual' })
     })
 
     it('ignores the ID on other sites', async () => {
@@ -83,6 +110,7 @@ describe('Checkout Process', () => {
 
       expect(response.status).toBe(200)
       expect(createdMetadata().kount_session_id).toBeUndefined()
+      expect(mockStripe.checkout.sessions.create.mock.calls[0][0].payment_intent_data).toBeUndefined()
     })
 
     it('completes checkout without an invalid ID', async () => {
@@ -95,6 +123,135 @@ describe('Checkout Process', () => {
 
       expect(response.status).toBe(200)
       expect(createdMetadata().kount_session_id).toBeUndefined()
+      // Still held: only a Kount decision may capture it.
+      expect(mockStripe.checkout.sessions.create.mock.calls[0][0].payment_intent_data).toEqual({ capture_method: 'manual' })
+    })
+  })
+
+  describe('POST /api/stripe-webhook', () => {
+    const ddcSite = 'https://kount-poc-run-110301.bdrhoa.workers.dev'
+    const sessionId = 'cs_test_webhook'
+    const paymentIntentId = 'pi_test_webhook'
+    let fetchMock
+
+    const heldSession = {
+      id: sessionId,
+      currency: 'usd',
+      amount_subtotal: 2500,
+      amount_total: 2500,
+      metadata: { kount_session_id: 'a1b2c3d4e5f60718293a4b5c6d7e8f90' },
+      customer_details: { email: 'buyer@example.com' },
+      payment_intent: {
+        id: paymentIntentId,
+        capture_method: 'manual',
+        status: 'requires_capture',
+        metadata: {},
+        latest_charge: { id: 'ch_test', billing_details: {}, payment_method_details: {} }
+      }
+    }
+
+    const webhookRequest = (site = ddcSite, headers = { 'stripe-signature': 't=1,v1=abc' }) =>
+      createTestRequest(`${site}/api/stripe-webhook`, { method: 'POST', headers, body: { id: 'evt_test' } })
+
+    const kountDecision = (decision) => {
+      fetchMock.mockImplementation(async (url) => (String(url).includes('/as/token')
+        ? new Response(JSON.stringify({ access_token: 'token', expires_in: 1200 }))
+        : new Response(JSON.stringify({ order: { orderId: 'KOUNT1', riskInquiry: { decision } } }))))
+    }
+
+    beforeEach(() => {
+      resetKountTokenCache()
+      env.STRIPE_WEBHOOK_SECRET = 'whsec_test'
+      env.KOUNT_API_KEY = 'kount_key'
+      fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      mockStripe.webhooks.constructEventAsync.mockResolvedValue({
+        type: 'checkout.session.completed',
+        data: { object: { id: sessionId } }
+      })
+      mockStripe.checkout.sessions.retrieve.mockResolvedValue(heldSession)
+      mockStripe.checkout.sessions.listLineItems.mockResolvedValue({ data: [] })
+    })
+
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    it.each(['APPROVE', 'REVIEW'])('captures the held payment on %s', async (decision) => {
+      kountDecision(decision)
+
+      const response = await executeRequest(app, webhookRequest(), env)
+
+      expect(response.status).toBe(200)
+      expect(mockStripe.paymentIntents.capture).toHaveBeenCalledTimes(1)
+      expect(mockStripe.paymentIntents.cancel).not.toHaveBeenCalled()
+    })
+
+    it('cancels the held payment on DECLINE', async () => {
+      kountDecision('DECLINE')
+
+      const response = await executeRequest(app, webhookRequest(), env)
+
+      expect(response.status).toBe(200)
+      expect(mockStripe.paymentIntents.cancel).toHaveBeenCalledTimes(1)
+      expect(mockStripe.paymentIntents.capture).not.toHaveBeenCalled()
+    })
+
+    it('sends the DDC session ID to Kount as deviceSessionId', async () => {
+      kountDecision('APPROVE')
+
+      await executeRequest(app, webhookRequest(), env)
+
+      const orderCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/v2/orders'))
+      expect(JSON.parse(orderCall[1].body).deviceSessionId).toBe(heldSession.metadata.kount_session_id)
+    })
+
+    it('fails so Stripe retries, and leaves the payment held, when Kount is down', async () => {
+      fetchMock.mockImplementation(async () => new Response('', { status: 500 }))
+
+      const response = await executeRequest(app, webhookRequest(), env)
+
+      expect(response.status).toBe(503)
+      expect(mockStripe.paymentIntents.capture).not.toHaveBeenCalled()
+      expect(mockStripe.paymentIntents.cancel).not.toHaveBeenCalled()
+    })
+
+    it('rejects a delivery with an invalid signature', async () => {
+      mockStripe.webhooks.constructEventAsync.mockRejectedValue(new Error('bad signature'))
+
+      const response = await executeRequest(app, webhookRequest(), env)
+
+      expect(response.status).toBe(400)
+      expect(mockStripe.checkout.sessions.retrieve).not.toHaveBeenCalled()
+    })
+
+    it('rejects a delivery with no signature', async () => {
+      const response = await executeRequest(app, webhookRequest(ddcSite, {}), env)
+
+      expect(response.status).toBe(400)
+    })
+
+    it('refuses to run until its secrets are configured', async () => {
+      delete env.KOUNT_API_KEY
+
+      const response = await executeRequest(app, webhookRequest(), env)
+
+      expect(response.status).toBe(503)
+    })
+
+    it('does not exist on other sites', async () => {
+      const response = await executeRequest(app, webhookRequest('https://kount-poc-base.bdrhoa.workers.dev'), env)
+
+      expect(response.status).toBe(404)
+    })
+
+    it('ignores other events', async () => {
+      mockStripe.webhooks.constructEventAsync.mockResolvedValue({ type: 'charge.updated', data: { object: {} } })
+
+      const response = await executeRequest(app, webhookRequest(), env)
+
+      expect(response.status).toBe(200)
+      expect(mockStripe.checkout.sessions.retrieve).not.toHaveBeenCalled()
     })
   })
 
@@ -497,7 +654,7 @@ describe('Checkout Process', () => {
       expect(data.currency).toBe('usd')
       expect(data.customer_email).toBe('test@example.com')
       expect(data.payment_status).toBe('paid')
-      expect(mockStripe.checkout.sessions.retrieve).toHaveBeenCalledWith(sessionId)
+      expect(mockStripe.checkout.sessions.retrieve).toHaveBeenCalledWith(sessionId, { expand: ['payment_intent'] })
     })
 
     it('should return 400 for invalid sessionId format', async () => {
@@ -542,7 +699,7 @@ describe('Checkout Process', () => {
       const response = await executeRequest(app, request, env)
 
       expect(response.status).toBe(200)
-      expect(mockStripe.checkout.sessions.retrieve).toHaveBeenCalledWith(sessionId.trim())
+      expect(mockStripe.checkout.sessions.retrieve).toHaveBeenCalledWith(sessionId.trim(), { expand: ['payment_intent'] })
     })
   })
 })

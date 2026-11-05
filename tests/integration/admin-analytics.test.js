@@ -7,11 +7,13 @@ import Stripe from 'stripe'
 // Mock Stripe
 vi.mock('stripe', () => {
   const mockCheckoutSessions = {
-    list: vi.fn()
+    list: vi.fn(),
+    listLineItems: vi.fn()
   }
 
   const mockPaymentIntents = {
-    list: vi.fn()
+    list: vi.fn(),
+    retrieve: vi.fn()
   }
 
   return {
@@ -88,6 +90,26 @@ describe('Admin Analytics Endpoints', () => {
   })
 
   describe('GET /api/admin/analytics/orders', () => {
+    it('lists only orders whose payment was captured', async () => {
+      const session = (id, paymentIntent) => ({ id, status: 'complete', payment_intent: paymentIntent, created: 1 })
+      const statuses = { pi_captured: 'succeeded', pi_held: 'requires_capture', pi_declined: 'canceled' }
+      mockStripe.checkout.sessions.list.mockResolvedValue({
+        data: [session('cs_captured', 'pi_captured'), session('cs_held', 'pi_held'), session('cs_declined', 'pi_declined')],
+        has_more: false
+      })
+      mockStripe.checkout.sessions.listLineItems.mockResolvedValue({ data: [] })
+      mockStripe.paymentIntents.retrieve.mockImplementation(async (id) => ({ id, status: statuses[id] }))
+
+      const request = createTestRequest('/api/admin/analytics/orders', {
+        method: 'GET',
+        headers: createAdminHeaders(adminToken)
+      })
+
+      const data = await parseJsonResponse(await executeRequest(app, request, env))
+
+      expect(data.orders.map((order) => order.id)).toEqual(['cs_captured'])
+    })
+
     it('should return orders list', async () => {
       const mockSessions = {
         data: [
