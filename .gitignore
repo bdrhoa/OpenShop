@@ -35,3 +35,11 @@ wrangler.toml
 /verify_media_modal.py
 # Local credentials notes - never commit
 cloudflareforopenshop.txt
+
+# Local credentials and personal agent configuration
+.env
+.env.*
+!.env.example
+!.env.*.example
+CLAUDE.local.md
+.claude/settings.local.json
