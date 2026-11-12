@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Clone an OpenShop site (Worker config + KV data) to a new site name.
+// Clone an OpenShop site (Worker config + KV data) to a new site name, then
+// deploy it.
 //
 //   npm run clone -- <source-site> <target-site>
-//   npm run deploy <target-site>
 //
 // Copies: toml/<source>.toml -> toml/<target>.toml (new name, KV namespace,
 // R2 bucket, SITE_URL), .env.<source> -> .env.<target>, and every KV entry
@@ -120,5 +120,11 @@ if (existsSync(srcEnv)) {
   console.log(`✅ Wrote .env.${target}`)
 }
 
-console.log(`\n🚀 Next: npm run deploy ${target}`)
-console.log(`   Then open ${dstSiteUrl} (admin password is the same as ${srcName})`)
+// 5. Deploy the new site
+console.log(`\n🚀 Deploying ${target}...`)
+try {
+  execFileSync('npm', ['run', 'deploy', target], { stdio: 'inherit' })
+} catch {
+  die(`Deploy failed. The clone itself is complete; retry with: npm run deploy ${target}`)
+}
+console.log(`\n✅ Done. Open ${dstSiteUrl} (admin password is the same as ${srcName})`)
