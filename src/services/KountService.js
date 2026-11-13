@@ -209,6 +209,15 @@ export class KountService {
     return { ...parseEvaluateResponse(body), correlationId }
   }
 
+  /**
+   * POST /commerce/v2/orders?riskInquiry=false — records an order with Kount
+   * without asking for a decision (used for declined authorization attempts).
+   */
+  async submitOrder(orderBody) {
+    const { body, correlationId } = await this.#apiRequest('POST', '/commerce/v2/orders?riskInquiry=false', orderBody)
+    return { kountOrderId: body?.order?.orderId || null, correlationId }
+  }
+
   /** PATCH /commerce/v2/orders/{orderId} — does not trigger a new risk inquiry. */
   async updateOrder(kountOrderId, patchBody) {
     if (!kountOrderId) throw new KountError('Kount order id is required for updates')

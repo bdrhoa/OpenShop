@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  mapFailedAuthorization,
   buildKountOrder,
   parseEvaluateResponse,
   mapAvsStatus,
@@ -135,5 +136,71 @@ describe('parseEvaluateResponse', () => {
   it('accepts riskInquiry as an array and rejects unknown decisions', () => {
     expect(parseEvaluateResponse({ order: { riskInquiry: [{ decision: 'APPROVE' }] } }).decision).toBe('APPROVE')
     expect(parseEvaluateResponse({ order: { riskInquiry: { decision: 'MAYBE' } } }).decision).toBeNull()
+  })
+})
+
+function failedCharge(outcome, checks = {}) {
+  return {
+    id: 'ch_failed',
+    outcome,
+    failure_code: 'card_declined',
+    billing_details: { name: 'Pat Buyer', email: 'pat@example.com', address: { line1: '1 Main', city: 'Boise', state: 'ID', postal_code: '83702', country: 'US' } },
+    shipping: { name: 'Pat Buyer', address: { line1: '1 Main', city: 'Boise', state: 'ID', postal_code: '83702', country: 'US' } },
+    payment_method_details: { card: { brand: 'visa', last4: '4242', fingerprint: 'fp_x', checks } },
+  }
+}
+
+describe('declined authorization attempts', () => {
+  it('reports a Radar block as UNKNOWN with the blocklist code, CVV UNKNOWN and no AVS', () => {
+    const auth = mapFailedAuthorization(failedCharge(
+      { type: 'blocked', reason: 'blocklist' },
+      { cvc_check: 'unavailable', address_line1_check: 'unavailable', address_postal_code_check: 'unavailable' },
+    ))
+    expect(auth).toEqual({
+      transactionStatus: 'REFUSED',
+      authResult: 'UNKNOWN',
+      declineCode: 'stripe_radar_blocklist',
+      cvvStatus: 'UNKNOWN',
+      avsStatus: undefined,
+    })
+  })
+
+  it('names other Radar block reasons after the reason', () => {
+    expect(mapFailedAuthorization(failedCharge({ type: 'blocked', reason: 'highest_risk_level' })).declineCode)
+      .toBe('stripe_radar_highest_risk_level')
+  })
+
+  it('reports an issuer decline as DECLINED with the network code and the checks that ran', () => {
+    const auth = mapFailedAuthorization(
+      failedCharge({ type: 'issuer_declined', network_decline_code: '05' }, { cvc_check: 'pass', address_line1_check: 'pass', address_postal_code_check: 'pass' }),
+    )
+    expect(auth).toMatchObject({ authResult: 'DECLINED', declineCode: '05', cvvStatus: 'MATCH', avsStatus: 'Y' })
+  })
+
+  it('falls back to the PaymentIntent decline code, then the charge failure code', () => {
+    const pi = { last_payment_error: { decline_code: 'insufficient_funds' } }
+    expect(mapFailedAuthorization(failedCharge({ type: 'issuer_declined' }), pi).declineCode).toBe('insufficient_funds')
+    expect(mapFailedAuthorization(failedCharge({ type: 'issuer_declined' })).declineCode).toBe('card_declined')
+  })
+
+  it('builds the order from the charge when the checkout session has no customer details', () => {
+    const charge = failedCharge({ type: 'blocked', reason: 'blocklist' }, { cvc_check: 'unavailable' })
+    const body = buildKountOrder({
+      session: { id: 'cs_open', currency: 'usd', amount_total: 3799, amount_subtotal: 3799 },
+      paymentIntent: { id: 'pi_x', amount: 3799 },
+      charge,
+      authorization: mapFailedAuthorization(charge),
+    })
+    const tx = body.transactions[0]
+    expect(body.merchantOrderId).toBe('cs_open')
+    expect(tx.transactionStatus).toBe('REFUSED')
+    expect(tx.authorizationStatus).toEqual({
+      authResult: 'UNKNOWN',
+      declineCode: 'stripe_radar_blocklist',
+      verificationResponse: { cvvStatus: 'UNKNOWN' },
+      processorTransactionId: 'ch_failed',
+    })
+    expect(tx.billedPerson.emailAddress).toBe('pat@example.com')
+    expect(body.fulfillment[0].recipientPerson.address.postalCode).toBe('83702')
   })
 })

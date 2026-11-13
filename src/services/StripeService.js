@@ -393,6 +393,26 @@ export class StripeService {
     return { session, lineItems: lineItems?.data || [] }
   }
 
+  /**
+   * Everything needed to report a failed payment attempt to Kount: the
+   * failed charge, the Checkout Session it belongs to, and its line items.
+   * Returns session null when the PaymentIntent did not come from Checkout.
+   */
+  async getFailedAttemptContext(paymentIntentId, chargeId) {
+    this.assertCheckoutAvailable()
+    const [charge, sessions] = await Promise.all([
+      this.stripe.charges.retrieve(chargeId),
+      this.stripe.checkout.sessions.list({ payment_intent: paymentIntentId, limit: 1 }),
+    ])
+    const session = sessions?.data?.[0] || null
+    if (!session) return { charge, session: null, lineItems: [] }
+    const lineItems = await this.stripe.checkout.sessions.listLineItems(session.id, {
+      limit: 100,
+      expand: ['data.price.product'],
+    })
+    return { charge, session, lineItems: lineItems?.data || [] }
+  }
+
   async retrievePaymentIntent(paymentIntentId) {
     this.assertCheckoutAvailable()
     return await this.stripe.paymentIntents.retrieve(paymentIntentId)

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { FraudReviewService, customerOrderStatus } from '../../../src/services/FraudReviewService.js'
 import { KountError } from '../../../src/services/KountService.js'
-import { FRAUD_STATES, KOUNT_KV_PREFIX } from '../../../src/config/kount.js'
+import { FRAUD_STATES, KOUNT_KV_PREFIX, KOUNT_DECLINE_KV_PREFIX } from '../../../src/config/kount.js'
 import { createMockKV } from '../../setup.js'
 
 function heldSession({ status = 'requires_capture', hold = '1' } = {}) {
@@ -291,5 +291,80 @@ describe('FraudReviewService.getCustomerOrderStatus', () => {
     expect(await service.getCustomerOrderStatus('cs_x', { held: true })).toBe('processing')
     await kv.put(`${KOUNT_KV_PREFIX}cs_x`, JSON.stringify({ state: FRAUD_STATES.DECLINED_CANCELED }))
     expect(await service.getCustomerOrderStatus('cs_x', { held: true })).toBe('declined')
+  })
+})
+
+describe('FraudReviewService.handlePaymentFailed', () => {
+  const failedPi = (overrides = {}) => ({
+    id: 'pi_test_1',
+    metadata: { kount_hold: '1', kount_device_session_id: 'dev123', kount_user_ip: '192.0.2.1' },
+    last_payment_error: { charge: 'ch_failed', decline_code: 'generic_decline' },
+    ...overrides,
+  })
+
+  function makeDeclineDeps({ submitError } = {}) {
+    const deps = makeDeps()
+    deps.stripe.getFailedAttemptContext = vi.fn(async () => ({
+      charge: {
+        id: 'ch_failed',
+        outcome: { type: 'blocked', reason: 'blocklist' },
+        billing_details: { email: 'pat@example.com' },
+        payment_method_details: { card: { brand: 'visa', last4: '4242', fingerprint: 'fp', checks: { cvc_check: 'unavailable' } } },
+      },
+      session: { id: 'cs_test_1', currency: 'usd', amount_total: 1000 },
+      lineItems: [],
+    }))
+    deps.kount.submitOrder = vi.fn(async () => {
+      if (submitError) throw submitError
+      return { kountOrderId: 'KD1' }
+    })
+    return deps
+  }
+
+  it('submits a Radar block to Kount as data only and records it', async () => {
+    const { service, kount, kv } = makeDeclineDeps()
+    const result = await service.handlePaymentFailed(failedPi())
+    expect(result.status).toBe('done')
+    expect(result.report).toMatchObject({ state: 'submitted', kountOrderId: 'KD1', authResult: 'UNKNOWN', declineCode: 'stripe_radar_blocklist' })
+    const body = kount.submitOrder.mock.calls[0][0]
+    expect(body).toMatchObject({ merchantOrderId: 'cs_test_1', deviceSessionId: 'dev123', userIp: '192.0.2.1' })
+    expect(body.transactions[0].authorizationStatus).toMatchObject({ authResult: 'UNKNOWN', verificationResponse: { cvvStatus: 'UNKNOWN' } })
+    expect(kount.evaluateOrder).not.toHaveBeenCalled()
+    expect(JSON.parse(await kv.get(`${KOUNT_DECLINE_KV_PREFIX}ch_failed`)).state).toBe('submitted')
+    // No fraud review record: the checkout can still succeed on a later attempt.
+    expect(await service.getRecord('cs_test_1')).toBeNull()
+  })
+
+  it('reports each failed charge once', async () => {
+    const { service, kount } = makeDeclineDeps()
+    await service.handlePaymentFailed(failedPi())
+    const again = await service.handlePaymentFailed(failedPi())
+    expect(again).toMatchObject({ status: 'done', reason: 'already_reported' })
+    expect(kount.submitOrder).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores payments that were not held for Kount or have no charge', async () => {
+    const { service, kount } = makeDeclineDeps()
+    expect((await service.handlePaymentFailed(failedPi({ metadata: {} }))).reason).toBe('not_held_for_review')
+    expect((await service.handlePaymentFailed(failedPi({ last_payment_error: {} }))).reason).toBe('no_charge')
+    expect(kount.submitOrder).not.toHaveBeenCalled()
+  })
+
+  it('never resubmits after an uncertain outcome', async () => {
+    const { service, kount } = makeDeclineDeps({ submitError: new KountError('timeout', { uncertain: true }) })
+    expect((await service.handlePaymentFailed(failedPi())).report.state).toBe('uncertain')
+    await service.handlePaymentFailed(failedPi())
+    expect(kount.submitOrder).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks for a retry when Kount certainly did not record it', async () => {
+    const { service, kv } = makeDeclineDeps({ submitError: new KountError('exhausted', { status: 503 }) })
+    expect((await service.handlePaymentFailed(failedPi())).status).toBe('retry')
+    expect(await kv.get(`${KOUNT_DECLINE_KV_PREFIX}ch_failed`)).toBeNull()
+  })
+
+  it('does not retry a payload Kount rejected', async () => {
+    const { service } = makeDeclineDeps({ submitError: new KountError('bad request', { status: 400 }) })
+    expect((await service.handlePaymentFailed(failedPi())).report.state).toBe('rejected')
   })
 })

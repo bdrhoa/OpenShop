@@ -94,6 +94,48 @@ function amountString(value) {
   return Number.isInteger(value) && value >= 0 ? String(value) : undefined
 }
 
+function chargeCustomer(charge) {
+  const billing = charge?.billing_details
+  if (!billing) return {}
+  return { name: billing.name, email: billing.email, phone: billing.phone, address: billing.address }
+}
+
+/**
+ * Kount authorization fields for a Stripe charge that failed.
+ *
+ * - Stripe Radar blocks never reach the card network, so the bank's answer
+ *   is unknown: authResult UNKNOWN, a stripe_radar_* decline code, CVV
+ *   UNKNOWN and no AVS status.
+ * - Everything else is a decline: authResult DECLINED with the network's or
+ *   Stripe's decline code and whatever CVV/AVS checks ran.
+ *
+ * @param {object} charge - The failed Stripe charge
+ * @param {object} [paymentIntent] - Its PaymentIntent (for last_payment_error)
+ */
+export function mapFailedAuthorization(charge, paymentIntent) {
+  const outcome = charge?.outcome || {}
+  if (outcome.type === 'blocked') {
+    return {
+      transactionStatus: 'REFUSED',
+      authResult: 'UNKNOWN',
+      declineCode: outcome.reason === 'blocklist' ? 'stripe_radar_blocklist' : `stripe_radar_${outcome.reason || 'block'}`,
+      cvvStatus: 'UNKNOWN',
+      avsStatus: undefined,
+    }
+  }
+  const checks = charge?.payment_method_details?.card?.checks || {}
+  return {
+    transactionStatus: 'REFUSED',
+    authResult: 'DECLINED',
+    declineCode: outcome.network_decline_code
+      || paymentIntent?.last_payment_error?.decline_code
+      || charge?.failure_code
+      || undefined,
+    cvvStatus: mapCvvStatus(checks.cvc_check),
+    avsStatus: mapAvsStatus(checks.address_line1_check, checks.address_postal_code_check),
+  }
+}
+
 /** Shipping details moved under collected_information in newer API versions. */
 export function getShippingDetails(session) {
   return session?.collected_information?.shipping_details || session?.shipping_details || null
@@ -109,13 +151,23 @@ export function getShippingDetails(session) {
  * @param {Array} [input.lineItems] - Checkout Session line items
  * @param {string} [input.deviceSessionId]
  * @param {string} [input.userIp]
+ * @param {object} [input.authorization] - Override for a failed attempt
+ *   (see mapFailedAuthorization). Defaults to an approved authorization.
  */
-export function buildKountOrder({ session, paymentIntent, charge, lineItems = [], deviceSessionId, userIp }) {
+export function buildKountOrder({ session, paymentIntent, charge, lineItems = [], deviceSessionId, userIp, authorization }) {
   const currency = String(session.currency || paymentIntent?.currency || 'usd').toUpperCase()
-  const customer = session.customer_details || {}
-  const shipping = getShippingDetails(session)
+  // A checkout that has not completed (a failed attempt) has no customer or
+  // shipping details on the session yet; the charge carries what was entered.
+  const customer = session.customer_details || chargeCustomer(charge)
+  const shipping = getShippingDetails(session) || charge?.shipping || null
   const card = charge?.payment_method_details?.card || {}
   const checks = card.checks || {}
+  const auth = authorization || {
+    transactionStatus: 'AUTHORIZED',
+    authResult: 'APPROVED',
+    cvvStatus: mapCvvStatus(checks.cvc_check),
+    avsStatus: mapAvsStatus(checks.address_line1_check, checks.address_postal_code_check),
+  }
 
   const items = lineItems.map((li, index) => {
     const product = li.price?.product
@@ -156,13 +208,14 @@ export function buildKountOrder({ session, paymentIntent, charge, lineItems = []
       phoneNumber: customer.phone,
       address: mapAddress(customer.address),
     },
-    transactionStatus: 'AUTHORIZED',
+    transactionStatus: auth.transactionStatus,
     authorizationStatus: {
-      authResult: 'APPROVED',
+      authResult: auth.authResult,
       verificationResponse: {
-        cvvStatus: mapCvvStatus(checks.cvc_check),
-        avsStatus: mapAvsStatus(checks.address_line1_check, checks.address_postal_code_check),
+        cvvStatus: auth.cvvStatus,
+        avsStatus: auth.avsStatus,
       },
+      declineCode: auth.declineCode,
       processorAuthCode: charge?.authorization_code,
       processorTransactionId: charge?.id || paymentIntent?.id,
     },

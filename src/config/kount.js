@@ -41,6 +41,20 @@ export const KOUNT_CHANNEL = 'OPENSHOP_WEB'
 // KV keys for fraud review records.
 export const KOUNT_KV_PREFIX = 'kount:order:'
 
+// KV keys for declined authorization attempts reported to Kount, one per
+// failed Stripe charge.
+export const KOUNT_DECLINE_KV_PREFIX = 'kount:decline:'
+
+// Decline report states.
+export const DECLINE_REPORT_STATES = Object.freeze({
+  SUBMITTING: 'submitting',
+  SUBMITTED: 'submitted',
+  // Kount may have recorded it (timeout or 5xx); never resubmitted.
+  UNCERTAIN: 'uncertain',
+  // Kount rejected the payload (4xx); not retried.
+  REJECTED: 'rejected',
+})
+
 // An evaluation still marked in progress after this long is treated as an
 // uncertain outcome that needs reconciliation, never re-submitted blindly.
 export const KOUNT_EVALUATION_STALE_MS = 5 * 60 * 1000

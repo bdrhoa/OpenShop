@@ -6,9 +6,10 @@ import { resetKountTokenCache } from '../../src/services/KountService.js'
 import { KOUNT_KV_PREFIX } from '../../src/config/kount.js'
 
 const stripeMock = vi.hoisted(() => ({
-  checkout: { sessions: { create: vi.fn(), retrieve: vi.fn(), listLineItems: vi.fn() } },
+  checkout: { sessions: { create: vi.fn(), retrieve: vi.fn(), listLineItems: vi.fn(), list: vi.fn() } },
   paymentIntents: { capture: vi.fn(), cancel: vi.fn(), retrieve: vi.fn() },
   refunds: { create: vi.fn() },
+  charges: { retrieve: vi.fn() },
   webhooks: { constructEventAsync: vi.fn() },
 }))
 
@@ -201,6 +202,46 @@ describe('Kount integration', () => {
     data = await parseJsonResponse(await lookup())
     expect(data.order_status).toBe('declined')
     expect(Object.keys(data).sort()).toEqual(['id', 'order_status', 'payment_status'])
+  })
+
+  it('reports a Radar-blocked attempt to Kount without a risk inquiry', async () => {
+    stripeMock.webhooks.constructEventAsync.mockResolvedValue({
+      type: 'payment_intent.payment_failed',
+      data: { object: {
+        id: 'pi_test_kount',
+        metadata: { kount_hold: '1', kount_device_session_id: 'abc123' },
+        last_payment_error: { charge: 'ch_blocked' },
+      } },
+    })
+    stripeMock.charges.retrieve.mockResolvedValue({
+      id: 'ch_blocked',
+      outcome: { type: 'blocked', reason: 'blocklist' },
+      billing_details: { email: 'buyer@example.com' },
+      payment_method_details: { card: { brand: 'visa', last4: '4242', fingerprint: 'fp', checks: { cvc_check: 'unavailable' } } },
+    })
+    stripeMock.checkout.sessions.list.mockResolvedValue({ data: [{ id: 'cs_test_kount', currency: 'usd', amount_total: 1500 }] })
+    stripeMock.checkout.sessions.listLineItems.mockResolvedValue({ data: [] })
+
+    const send = () => executeRequest(app, createTestRequest('/api/stripe-webhook', {
+      method: 'POST', body: '{}', headers: { 'stripe-signature': 't=1,v1=x' },
+    }), env)
+    const res = await send()
+    expect(res.status).toBe(200)
+    expect((await parseJsonResponse(res)).state).toBe('submitted')
+
+    const orderCalls = fetchSpy.mock.calls.filter(([url]) => String(url).includes('/commerce/v2/orders'))
+    expect(orderCalls).toHaveLength(1)
+    expect(String(orderCalls[0][0])).toContain('riskInquiry=false')
+    const tx = JSON.parse(orderCalls[0][1].body).transactions[0]
+    expect(tx.transactionStatus).toBe('REFUSED')
+    expect(tx.authorizationStatus).toMatchObject({
+      authResult: 'UNKNOWN', declineCode: 'stripe_radar_blocklist', verificationResponse: { cvvStatus: 'UNKNOWN' },
+    })
+    expect(tx.authorizationStatus.verificationResponse).not.toHaveProperty('avsStatus')
+
+    // A redelivery of the same event is not sent again.
+    expect((await send()).status).toBe(200)
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes('/commerce/v2/orders'))).toHaveLength(1)
   })
 
   it('rejects Stripe webhooks with a bad signature or without configuration', async () => {

@@ -20,8 +20,10 @@ import {
   FRAUD_STATES,
   FRAUD_FINAL_STATES,
   FRAUD_FULFILLABLE_STATES,
+  KOUNT_DECLINE_KV_PREFIX,
+  DECLINE_REPORT_STATES,
 } from '../config/kount.js'
-import { buildKountOrder } from '../lib/kountOrder.js'
+import { buildKountOrder, mapFailedAuthorization } from '../lib/kountOrder.js'
 import { FRAUD_HOLD_METADATA_KEY, StripeService } from './StripeService.js'
 import { KountService, isKountConfigured } from './KountService.js'
 import { resolveSetting } from './DeveloperSettingsService.js'
@@ -249,6 +251,95 @@ export class FraudReviewService {
     if (!held) return CUSTOMER_ORDER_STATUS.CONFIRMED
     const record = await this.getRecord(checkoutSessionId)
     return customerOrderStatus(record?.state)
+  }
+
+  // ---- Declined authorization attempts ----------------------------------
+
+  /**
+   * Report a failed payment attempt (payment_intent.payment_failed) to Kount
+   * as data only (no risk inquiry), so declines feed Kount's model. Nothing
+   * changes in Stripe or for the buyer. One report per failed charge.
+   * @param {object} paymentIntent - Stripe PaymentIntent from the verified event
+   * @returns {Promise<{ status: 'done'|'ignored'|'in_progress'|'retry', reason?: string, report?: object }>}
+   */
+  async handlePaymentFailed(paymentIntent) {
+    if (!paymentIntent?.id || paymentIntent.metadata?.[FRAUD_HOLD_METADATA_KEY] !== '1') {
+      return { status: 'ignored', reason: 'not_held_for_review' }
+    }
+    const chargeId = paymentIntent.last_payment_error?.charge
+      || (typeof paymentIntent.latest_charge === 'string' ? paymentIntent.latest_charge : paymentIntent.latest_charge?.id)
+    if (!chargeId) return { status: 'ignored', reason: 'no_charge' }
+
+    const key = `${KOUNT_DECLINE_KV_PREFIX}${chargeId}`
+    const existing = await this.#getJson(key)
+    if (existing) {
+      const age = Date.now() - Date.parse(existing.updatedAt || 0)
+      if (existing.state === DECLINE_REPORT_STATES.SUBMITTING && age < KOUNT_EVALUATION_STALE_MS) {
+        return { status: 'in_progress', report: existing }
+      }
+      if (existing.state === DECLINE_REPORT_STATES.SUBMITTING) {
+        // Started but never finished: Kount may have it, so don't resubmit.
+        const report = await this.#putJson(key, { ...existing, state: DECLINE_REPORT_STATES.UNCERTAIN, error: 'Submission outcome unknown (stale)' })
+        return { status: 'done', report }
+      }
+      return { status: 'done', reason: 'already_reported', report: existing }
+    }
+
+    const { charge, session, lineItems } = await this.stripe.getFailedAttemptContext(paymentIntent.id, chargeId)
+    if (!session) return { status: 'ignored', reason: 'no_checkout_session' }
+
+    const authorization = mapFailedAuthorization(charge, paymentIntent)
+    const base = {
+      chargeId,
+      paymentIntentId: paymentIntent.id,
+      checkoutSessionId: session.id,
+      authResult: authorization.authResult,
+      declineCode: authorization.declineCode || null,
+      createdAt: new Date().toISOString(),
+    }
+    await this.#putJson(key, { ...base, state: DECLINE_REPORT_STATES.SUBMITTING })
+
+    const orderBody = buildKountOrder({
+      session,
+      paymentIntent,
+      charge,
+      lineItems,
+      deviceSessionId: paymentIntent.metadata?.kount_device_session_id,
+      userIp: paymentIntent.metadata?.kount_user_ip,
+      authorization,
+    })
+
+    try {
+      const { kountOrderId } = await this.kount.submitOrder(orderBody)
+      const report = await this.#putJson(key, { ...base, state: DECLINE_REPORT_STATES.SUBMITTED, kountOrderId })
+      return { status: 'done', report }
+    } catch (error) {
+      console.error('[FraudReview] Kount decline report failed:', error.message)
+      if (error.uncertain) {
+        const report = await this.#putJson(key, { ...base, state: DECLINE_REPORT_STATES.UNCERTAIN, error: error.message })
+        return { status: 'done', report }
+      }
+      if (error.status >= 400 && error.status < 500) {
+        const report = await this.#putJson(key, { ...base, state: DECLINE_REPORT_STATES.REJECTED, error: error.message })
+        return { status: 'done', report }
+      }
+      // Kount certainly did not record it (e.g. token failure, retries
+      // exhausted on 429/503). Clear the marker so Stripe's retry resubmits.
+      await this.kv.delete(key)
+      return { status: 'retry', reason: error.message }
+    }
+  }
+
+  async #getJson(key) {
+    const raw = await this.kv.get(key)
+    if (!raw) return null
+    try { return JSON.parse(raw) } catch { return null }
+  }
+
+  async #putJson(key, value) {
+    const next = { ...value, updatedAt: new Date().toISOString() }
+    await this.kv.put(key, JSON.stringify(next))
+    return next
   }
 
   // ---- Stripe refund events ---------------------------------------------

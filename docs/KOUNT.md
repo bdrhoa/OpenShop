@@ -28,6 +28,20 @@ per-browser-session id         capture_method=manual          (authorize only)
                                reviewer DECLINE → refund (stays blocked)
 ```
 
+### Declined payment attempts
+
+A declined card never completes hosted Checkout: the buyer sees Stripe's error and can try again, so no `checkout.session.completed` arrives. Declines are still useful signal for Kount's model, so OpenShop reports each failed attempt from `payment_intent.payment_failed` (only for checkouts held for Kount):
+
+- `POST /commerce/v2/orders?riskInquiry=false`: the order is recorded with no decision requested. Nothing changes in Stripe or for the buyer, and no fraud review record is created, so a later successful attempt in the same checkout is evaluated normally.
+- The body is the usual order (same `merchantOrderId`, device session id and IP), built from the failed charge's billing and shipping details, with `transactionStatus: "REFUSED"` and:
+
+| Stripe outcome | `authResult` | `declineCode` | `cvvStatus` | `avsStatus` |
+|---|---|---|---|---|
+| Radar block (`outcome.type: blocked`), never sent to the card network | `UNKNOWN` | `stripe_radar_blocklist` (other Radar reasons: `stripe_radar_{reason}`) | `UNKNOWN` | omitted |
+| Any other decline (issuer decline, invalid card) | `DECLINED` | network decline code, else Stripe's `decline_code`, else `failure_code` | from `cvc_check` | from the address checks |
+
+- One report per failed charge (`kount:decline:{chargeId}`). Redeliveries are no-ops; a concurrent delivery gets `409`. A timeout or 5xx is marked `uncertain` and never resubmitted; a `4xx` is marked `rejected`. If Kount certainly did not record it (token failure, retries exhausted on `429`/`503`), the webhook returns `503` so Stripe retries.
+
 ### What the buyer sees
 
 Stripe sends the buyer to `/success` as soon as the card is authorized, usually before Kount has decided. `GET /api/checkout-session/:id` returns an `order_status`, and the success page polls it every 2 seconds for up to 30 seconds:
@@ -88,7 +102,7 @@ Set these as Worker secrets or vars, or in **Admin → Developer settings** (KV 
 
 Set up webhooks:
 
-1. **Stripe** → Developers → Webhooks → endpoint `https://<site>/api/stripe-webhook`, events `checkout.session.completed`, `refund.updated` and `refund.failed`.
+1. **Stripe** → Developers → Webhooks → endpoint `https://<site>/api/stripe-webhook`, events `checkout.session.completed`, `payment_intent.payment_failed`, `refund.updated` and `refund.failed`.
 2. **Kount portal** → webhook URL `https://<site>/api/kount-webhook`. Use Order Update (Order Status Change is marked deprecated).
 
 ## Open questions from Kount's documentation

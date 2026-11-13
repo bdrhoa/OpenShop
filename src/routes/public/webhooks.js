@@ -1,4 +1,5 @@
-// Inbound webhooks: Stripe (checkout completion) and Kount (review decisions).
+// Inbound webhooks: Stripe (checkout completion, payment failures, refunds)
+// and Kount (review decisions).
 //
 // Both handlers read the raw body before parsing so signatures are checked
 // against exactly the bytes that were signed.
@@ -21,7 +22,8 @@ const router = new Hono()
 // reported as pending. charge.refund.updated is the older event name.
 const REFUND_EVENTS = new Set(['refund.updated', 'refund.failed', 'charge.refund.updated'])
 
-// Stripe → checkout.session.completed starts the Kount evaluation.
+// Stripe → checkout.session.completed starts the Kount evaluation;
+// payment_intent.payment_failed reports a declined attempt to Kount.
 router.post('/stripe-webhook', asyncHandler(async (c) => {
   const kv = getKVNamespace(c.env)
   const secret = await resolveSetting(kv, c.env, 'STRIPE_WEBHOOK_SECRET')
@@ -51,6 +53,18 @@ router.post('/stripe-webhook', asyncHandler(async (c) => {
       return c.json({ error: 'Refund not recorded yet' }, 409)
     }
     return c.json({ received: true, status: result.status, state: result.record?.state })
+  }
+
+  if (event.type === 'payment_intent.payment_failed') {
+    // A declined attempt on a held checkout: report it to Kount as data.
+    const result = await service.handlePaymentFailed(event.data.object)
+    if (result.status === 'in_progress') {
+      return c.json({ error: 'Decline report in progress' }, 409)
+    }
+    if (result.status === 'retry') {
+      return c.json({ error: 'Kount unavailable; retry later' }, 503)
+    }
+    return c.json({ received: true, status: result.status, state: result.report?.state })
   }
 
   if (event.type !== 'checkout.session.completed') {

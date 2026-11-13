@@ -107,7 +107,7 @@ Set `STRIPE_WEBHOOK_SECRET` (Worker secret or Developer settings) to the endpoin
 
 ### Handling Webhook Events
 
-The handler lives in `src/routes/public/webhooks.js`. Today it handles `checkout.session.completed` and the refund events (`refund.updated`, `refund.failed`, `charge.refund.updated`) for Kount fraud screening: when Kount is configured, checkout authorizes with manual capture and the webhook evaluates the order before capturing. See [KOUNT.md](./KOUNT.md). Other common extensions:
+The handler lives in `src/routes/public/webhooks.js`. Today it handles `checkout.session.completed`, `payment_intent.payment_failed` (declined attempts reported to Kount) and the refund events (`refund.updated`, `refund.failed`, `charge.refund.updated`) for Kount fraud screening: when Kount is configured, checkout authorizes with manual capture and the webhook evaluates the order before capturing. See [KOUNT.md](./KOUNT.md). Other common extensions:
 
 - Update order status in your system
 - Send confirmation emails
