@@ -7,8 +7,9 @@ const APP_CSP = [
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' data: https: blob:",
   "font-src 'self' data: https://fonts.gstatic.com",
-  "connect-src 'self' https://api.stripe.com https://*.stripe.com https://oauth2.googleapis.com https://www.googleapis.com",
-  "frame-src 'self' https://js.stripe.com https://hooks.stripe.com",
+  // *.kaptcha.com: Kount device data collection (tst. for Sandbox, ssl. for production)
+  "connect-src 'self' https://api.stripe.com https://*.stripe.com https://oauth2.googleapis.com https://www.googleapis.com https://*.kaptcha.com",
+  "frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://*.kaptcha.com",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

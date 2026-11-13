@@ -28,6 +28,10 @@ export const DEVELOPER_SETTING_FIELDS = [
   { key: 'OPENROUTER_IMAGE_MODEL', label: 'OpenRouter image model', secret: false },
   { key: 'OPENROUTER_MODEL', label: 'OpenRouter model (agent)', secret: false },
   { key: 'SITE_URL', label: 'Site URL', secret: false },
+  { key: 'STRIPE_WEBHOOK_SECRET', label: 'Stripe webhook signing secret', secret: true },
+  { key: 'KOUNT_CLIENT_ID', label: 'Kount client ID', secret: false },
+  { key: 'KOUNT_API_KEY', label: 'Kount API key', secret: true },
+  { key: 'KOUNT_WEBHOOK_PUBLIC_KEY', label: 'Kount webhook public key', secret: false },
   { key: 'ADMIN_PASSWORD', label: 'Admin password', secret: true, password: true },
 ]
 

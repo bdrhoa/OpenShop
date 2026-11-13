@@ -76,6 +76,7 @@ OpenShop is an open-source e-commerce platform on **Cloudflare Workers** (Hono A
 | [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) | Deploy and multi-site |
 | [docs/API.md](./docs/API.md) | HTTP API reference |
 | [docs/STRIPE.md](./docs/STRIPE.md) | Payments and webhooks |
+| [docs/KOUNT.md](./docs/KOUNT.md) | Kount fraud screening (post-auth, pre-capture) |
 | [docs/TESTING.md](./docs/TESTING.md) | Test conventions |
 | [DEVELOPMENT.md](./DEVELOPMENT.md) | Local dev commands |
 | [docs/references/](./docs/references/) | Curated external references for agents |

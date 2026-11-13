@@ -15,6 +15,14 @@ CLOUDFLARE_ACCOUNT_ID=your_cloudflare_account_id
 STRIPE_SECRET_KEY=sk_test_your_stripe_secret_key
 VITE_STRIPE_PUBLISHABLE_KEY=pk_test_your_stripe_publishable_key
 
+# Optional: Stripe webhook (required for Kount fraud screening)
+STRIPE_WEBHOOK_SECRET=whsec_your_webhook_signing_secret
+
+# Optional: Kount fraud screening (Sandbox) — see docs/KOUNT.md
+KOUNT_CLIENT_ID=your_kount_client_id
+KOUNT_API_KEY=your_kount_sandbox_api_key
+KOUNT_WEBHOOK_PUBLIC_KEY=your_kount_webhook_public_key
+
 # Admin Configuration
 ADMIN_PASSWORD=your_secure_admin_password
 

@@ -19,6 +19,9 @@
 | `collection:{id}` | Collection document |
 | `collection:products:{collectionId}` | JSON array of product IDs in collection |
 | `media:{id}` | Media metadata record |
+| `kount:order:{checkoutSessionId}` | Kount fraud review record: state, decision, PaymentIntent id, Kount order/transaction ids, history (see [KOUNT.md](../KOUNT.md)) |
+| `kount:kountorder:{kountOrderId}` | Index: Kount order id → Checkout Session id |
+| `kount:pi:{paymentIntentId}` | Index: PaymentIntent id → Checkout Session id (refund webhooks) |
 | `storefront:page:{slug}` | Puck page-builder document (core slugs `home`/`about` plus admin-created dynamic pages; slugs match `[a-z0-9]+(-[a-z0-9]+)*`, reserved route words rejected — see `src/lib/pageContent.js`) |
 
 ## Product shape (typical)

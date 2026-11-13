@@ -1,4 +1,5 @@
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+import { useEffect } from 'react'
+import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom'
 import { CartProvider } from './contexts/CartContext'
 import { StorefrontThemeProvider } from './contexts/StorefrontThemeContext'
 import { Storefront } from './pages/storefront/Storefront'
@@ -9,11 +10,24 @@ import { Cart } from './components/storefront/Cart'
 import { ProductPage } from './pages/storefront/ProductPage'
 import { About } from './pages/storefront/About'
 import { DynamicPage } from './pages/storefront/DynamicPage'
+import { startKountCollection } from './lib/kountDeviceCollection'
+
+// Kount device data collection runs on every storefront entry (not admin),
+// because buyers can reach hosted Stripe Checkout from any product page.
+function KountDeviceCollection() {
+  const { pathname } = useLocation()
+  const isStorefront = !pathname.startsWith('/admin')
+  useEffect(() => {
+    if (isStorefront) startKountCollection()
+  }, [isStorefront])
+  return null
+}
 
 function App() {
   return (
     <CartProvider>
       <Router>
+        <KountDeviceCollection />
         <StorefrontThemeProvider>
           <div className="min-h-screen storefront-surface">
             <Routes>

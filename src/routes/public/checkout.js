@@ -7,12 +7,28 @@ import { parseJsonBody } from '../../utils/request.js'
 import { resolveSetting } from '../../services/DeveloperSettingsService.js'
 import { getKVNamespace } from '../../utils/kv.js'
 import { CART_MAX_ITEMS, CART_MAX_ITEM_QUANTITY } from '../../config/index.js'
+import { resolveKountSettings } from '../../services/FraudReviewService.js'
+import { normalizeDeviceSessionId } from '../../lib/kountOrder.js'
 
 const router = new Hono()
 
+/**
+ * When Kount is configured, checkout authorizes without capturing so the
+ * order can be evaluated first (see docs/KOUNT.md). The device session id
+ * comes from the storefront's Kount device data collection.
+ */
+async function resolveFraudHold(c, kountSessionId) {
+  const kount = await resolveKountSettings(getKVNamespace(c.env), c.env)
+  if (!kount.enabled) return undefined
+  return {
+    deviceSessionId: normalizeDeviceSessionId(kountSessionId),
+    userIp: c.req.header('CF-Connecting-IP') || null,
+  }
+}
+
 // Create checkout session (single item)
 router.post('/create-checkout-session', asyncHandler(async (c) => {
-  const { priceId } = await parseJsonBody(c)
+  const { priceId, kountSessionId } = await parseJsonBody(c)
   
   // Validate and trim priceId
   if (!priceId || typeof priceId !== 'string') {
@@ -39,13 +55,15 @@ router.post('/create-checkout-session', asyncHandler(async (c) => {
     await resolveSetting(getKVNamespace(c.env), c.env, 'STRIPE_SECRET_KEY'),
     await resolveSetting(getKVNamespace(c.env), c.env, 'SITE_URL'),
   )
-  const session = await stripeService.createCheckoutSession(trimmedPriceId)
+  const session = await stripeService.createCheckoutSession(trimmedPriceId, {
+    fraudHold: await resolveFraudHold(c, kountSessionId),
+  })
   return c.json({ sessionId: session.id, url: session.url })
 }))
 
 // Create cart checkout session
 router.post('/create-cart-checkout-session', asyncHandler(async (c) => {
-  const { items } = await parseJsonBody(c)
+  const { items, kountSessionId } = await parseJsonBody(c)
   
   // Validate items array
   if (!items || !Array.isArray(items) || items.length === 0) {
@@ -94,7 +112,9 @@ router.post('/create-cart-checkout-session', asyncHandler(async (c) => {
     await resolveSetting(getKVNamespace(c.env), c.env, 'STRIPE_SECRET_KEY'),
     await resolveSetting(getKVNamespace(c.env), c.env, 'SITE_URL'),
   )
-  const session = await stripeService.createCartCheckoutSession(normalizedItems)
+  const session = await stripeService.createCartCheckoutSession(normalizedItems, {
+    fraudHold: await resolveFraudHold(c, kountSessionId),
+  })
   return c.json({ sessionId: session.id, url: session.url })
 }))
 

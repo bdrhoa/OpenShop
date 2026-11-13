@@ -24,9 +24,16 @@ These endpoints handle payment processing and checkout flows.
 |----------|--------|-------------|----------------|
 | `/api/create-checkout-session` | `POST` | Single item checkout | None |
 | `/api/create-cart-checkout-session` | `POST` | Multi-item cart checkout | None |
+| `/api/stripe-webhook` | `POST` | Stripe events (signature-verified); starts Kount evaluation — see [KOUNT.md](./KOUNT.md) | Stripe signature |
+| `/api/kount-webhook` | `POST` | Kount order decision events (RSA-PSS signature + timestamp) | Kount signature |
 | `/api/image-proxy?src=<url>` | `GET` | Proxy for Google Drive raster images (JPEG/PNG/WebP/GIF/AVIF only) | None |
 
+Checkout bodies accept an optional `kountSessionId` (the storefront's Kount device session id). When Kount is configured, sessions authorize with `capture_method: manual` and capture only after Kount approves.
+
 ## Admin Endpoints (Authenticated)
+
+- `GET /api/admin/fraud-reviews` lists Kount fraud review records.
+- `GET /api/admin/analytics/orders` includes `fraudReview: { fulfillable, state }` on each order. `POST /api/admin/analytics/orders/:id/fulfill` returns `409` for orders Kount holds, including REVIEW orders that are captured but not yet approved.
 
 These endpoints require admin authentication via the `X-Admin-Token` header.
 

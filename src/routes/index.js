@@ -10,6 +10,7 @@ import imageProxyRouter from './public/imageProxy.js'
 import storeSettingsRouter, { contactEmailRouter } from './public/storeSettings.js'
 import imagesRouter from './public/images.js'
 import pagesRouter from './public/pages.js'
+import webhooksRouter from './public/webhooks.js'
 
 // Admin routes
 import authRouter from './admin/auth.js'
@@ -25,6 +26,9 @@ import { isStripeConfigured } from '../services/StripeService.js'
 import { resolveSetting } from '../services/DeveloperSettingsService.js'
 import { getKVNamespace } from '../utils/kv.js'
 import developerSettingsRouter from './admin/developer-settings.js'
+import fraudReviewsRouter from './admin/fraudReviews.js'
+import { resolveKountSettings } from '../services/FraudReviewService.js'
+import { KOUNT_SANDBOX } from '../config/kount.js'
 
 /**
  * Register all routes on the app
@@ -47,12 +51,17 @@ export function registerRoutes(app) {
   // present, never the key itself. Resolved through Developer Settings so a
   // key set in the admin panel enables checkout without a redeploy.
   app.get('/api/payments-status', async (c) => {
-    const stripeKey = await resolveSetting(
-      getKVNamespace(c.env),
-      c.env,
-      'STRIPE_SECRET_KEY',
-    )
-    return c.json({ paymentsEnabled: isStripeConfigured(stripeKey) })
+    const kv = getKVNamespace(c.env)
+    const stripeKey = await resolveSetting(kv, c.env, 'STRIPE_SECRET_KEY')
+    const kount = await resolveKountSettings(kv, c.env)
+    // The Kount client ID is not a secret: the device collection SDK sends
+    // it from the browser. The API key never leaves the Worker.
+    return c.json({
+      paymentsEnabled: isStripeConfigured(stripeKey),
+      fraudPrevention: kount.enabled
+        ? { provider: 'kount', clientId: kount.clientId, environment: KOUNT_SANDBOX.collectorEnvironment }
+        : null,
+    })
   })
 
   // Public API routes
@@ -60,6 +69,7 @@ export function registerRoutes(app) {
   app.route('/api/collections', collectionsRouter)
   app.route('/api/storefront', storefrontRouter)
   app.route('/api', checkoutRouter) // /api/create-checkout-session, etc.
+  app.route('/api', webhooksRouter) // /api/stripe-webhook, /api/kount-webhook
   app.route('/api/image-proxy', imageProxyRouter)
   app.route('/api/store-settings', storeSettingsRouter)
   app.route('/api/contact-email', contactEmailRouter)
@@ -77,4 +87,5 @@ export function registerRoutes(app) {
   app.route('/api/admin/ai', aiRouter)
   app.route('/api/admin/agent', agentRouter) // /api/admin/agent/chat, /models
   app.route('/api/admin/developer-settings', developerSettingsRouter)
+  app.route('/api/admin/fraud-reviews', fraudReviewsRouter)
 }

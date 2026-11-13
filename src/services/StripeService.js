@@ -84,6 +84,28 @@ export function buildCartCheckoutMetadata(items) {
   return metadata
 }
 
+/** PaymentIntent metadata marking a checkout held for Kount evaluation. */
+export const FRAUD_HOLD_METADATA_KEY = 'kount_hold'
+
+/**
+ * Checkout Session params that authorize without capturing, so Kount can
+ * evaluate the order before funds are taken. Kount metadata lives on the
+ * PaymentIntent, not the session: cart sessions already use up to Stripe's
+ * 50 metadata keys.
+ */
+export function buildFraudHoldParams(fraudHold) {
+  if (!fraudHold) return {}
+  const metadata = { [FRAUD_HOLD_METADATA_KEY]: '1' }
+  if (fraudHold.deviceSessionId) metadata.kount_device_session_id = fraudHold.deviceSessionId
+  if (fraudHold.userIp) metadata.kount_user_ip = String(fraudHold.userIp).slice(0, 64)
+  return {
+    payment_intent_data: {
+      capture_method: 'manual',
+      metadata,
+    },
+  }
+}
+
 export class StripeService {
   constructor(secretKey, siteUrl) {
     this.secretKey = secretKey
@@ -218,10 +240,13 @@ export class StripeService {
 
   /**
    * Create checkout session for single item
+   * @param {string} priceId
+   * @param {{ fraudHold?: { deviceSessionId?: string|null, userIp?: string|null } }} [options]
    */
-  async createCheckoutSession(priceId) {
+  async createCheckoutSession(priceId, options = {}) {
     this.assertCheckoutAvailable()
     return await this.stripe.checkout.sessions.create({
+      ...buildFraudHoldParams(options.fraudHold),
       payment_method_types: ['card'],
       line_items: [{ price: priceId, quantity: 1 }],
       mode: 'payment',
@@ -237,7 +262,7 @@ export class StripeService {
   /**
    * Create checkout session for cart
    */
-  async createCartCheckoutSession(items) {
+  async createCartCheckoutSession(items, options = {}) {
     this.assertCheckoutAvailable()
     const lineItems = items.map(item => {
       // When using price IDs, you cannot set description, name, images, etc. directly
@@ -255,6 +280,7 @@ export class StripeService {
     })
 
     return await this.stripe.checkout.sessions.create({
+      ...buildFraudHoldParams(options.fraudHold),
       payment_method_types: ['card'],
       line_items: lineItems,
       mode: 'payment',
@@ -331,5 +357,72 @@ export class StripeService {
       limit: 100,
     })
   }
-}
 
+  /**
+   * Verify and parse a webhook delivery. Workers have no Node crypto, so use
+   * the async SubtleCrypto verifier.
+   */
+  async constructWebhookEvent(rawBody, signature, webhookSecret) {
+    this.assertCheckoutAvailable()
+    return await this.stripe.webhooks.constructEventAsync(
+      rawBody,
+      signature,
+      webhookSecret,
+      undefined,
+      Stripe.createSubtleCryptoProvider(),
+    )
+  }
+
+  /** Session with PaymentIntent, latest charge, and line items for fraud review. */
+  async getCheckoutSessionForReview(sessionId) {
+    this.assertCheckoutAvailable()
+    const session = await this.stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ['payment_intent.latest_charge'],
+    })
+    const lineItems = await this.stripe.checkout.sessions.listLineItems(sessionId, {
+      limit: 100,
+      expand: ['data.price.product'],
+    })
+    return { session, lineItems: lineItems?.data || [] }
+  }
+
+  async retrievePaymentIntent(paymentIntentId) {
+    this.assertCheckoutAvailable()
+    return await this.stripe.paymentIntents.retrieve(paymentIntentId)
+  }
+
+  /** Capture an authorized PaymentIntent. Idempotent per PaymentIntent. */
+  async capturePaymentIntent(paymentIntentId) {
+    this.assertCheckoutAvailable()
+    return await this.stripe.paymentIntents.capture(paymentIntentId, {}, {
+      idempotencyKey: `kount-capture-${paymentIntentId}`,
+    })
+  }
+
+  /** Release an uncaptured authorization. Idempotent per PaymentIntent. */
+  async cancelPaymentIntent(paymentIntentId) {
+    this.assertCheckoutAvailable()
+    return await this.stripe.paymentIntents.cancel(paymentIntentId, {
+      cancellation_reason: 'fraudulent',
+    }, {
+      idempotencyKey: `kount-cancel-${paymentIntentId}`,
+    })
+  }
+
+  /**
+   * Refund a captured PaymentIntent in full. Idempotent per PaymentIntent and
+   * attempt: a new attempt number is needed after a refund fails, because
+   * Stripe replays the original response for a reused key.
+   * @param {string} paymentIntentId
+   * @param {{ attempt?: number, checkoutSessionId?: string }} [options]
+   */
+  async refundPaymentIntent(paymentIntentId, { attempt = 0, checkoutSessionId } = {}) {
+    this.assertCheckoutAvailable()
+    const params = { payment_intent: paymentIntentId, reason: 'fraudulent' }
+    // Lets refund webhooks find the fraud review record.
+    if (checkoutSessionId) params.metadata = { checkout_session_id: checkoutSessionId }
+    return await this.stripe.refunds.create(params, {
+      idempotencyKey: attempt > 0 ? `kount-refund-${paymentIntentId}-${attempt}` : `kount-refund-${paymentIntentId}`,
+    })
+  }
+}

@@ -29,7 +29,13 @@ Applied in `src/worker.js`: CSP, `X-Frame-Options: DENY`, HSTS on HTTPS, etc.
 
 - Secret key: Worker only.
 - Publishable key: safe for frontend Checkout.
-- Webhook signing: verify signatures when webhooks are enabled—see [STRIPE.md](./STRIPE.md).
+- Webhook signing: `/api/stripe-webhook` verifies `Stripe-Signature` with `STRIPE_WEBHOOK_SECRET` (SubtleCrypto) — see [STRIPE.md](./STRIPE.md).
+
+## Kount
+
+- `KOUNT_API_KEY` stays in the Worker; only `KOUNT_CLIENT_ID` (not a secret) is exposed for device collection.
+- `/api/kount-webhook` verifies RSA-PSS/SHA-256 (32-byte salt) over `X-Event-Timestamp` + raw body and rejects timestamps outside 45 minutes.
+- CSP allows `https://*.kaptcha.com` (connect/frame) for the device collector. See [KOUNT.md](./KOUNT.md).
 
 ## CORS
 

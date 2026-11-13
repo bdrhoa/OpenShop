@@ -103,9 +103,11 @@ Webhooks allow you to track order completion and payment events in real-time.
 
 Stripe webhooks include a signature that verifies the request came from Stripe. OpenShop validates this signature to ensure webhook security.
 
+Set `STRIPE_WEBHOOK_SECRET` (Worker secret or Developer settings) to the endpoint's signing secret. Without it the endpoint returns 503.
+
 ### Handling Webhook Events
 
-You can extend OpenShop to handle webhook events by modifying the webhook handler in `src/routes/public/checkout.js`. Common use cases:
+The handler lives in `src/routes/public/webhooks.js`. Today it handles `checkout.session.completed` and the refund events (`refund.updated`, `refund.failed`, `charge.refund.updated`) for Kount fraud screening: when Kount is configured, checkout authorizes with manual capture and the webhook evaluates the order before capturing. See [KOUNT.md](./KOUNT.md). Other common extensions:
 
 - Update order status in your system
 - Send confirmation emails

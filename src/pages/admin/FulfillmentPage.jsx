@@ -6,6 +6,22 @@ import { adminApiRequest } from '../../lib/auth'
 import { AdminPageHeader } from '../../components/admin/AdminPageHeader'
 import { X, ShoppingBag, Check } from 'lucide-react'
 
+// Kount fraud review states that block shipping (see docs/KOUNT.md).
+const FRAUD_HOLD_LABELS = {
+  evaluating: 'Fraud check in progress',
+  review_captured: 'Awaiting fraud review',
+  review_declined_refund_pending: 'Declined in review (refund pending)',
+  review_declined_refunded: 'Declined in review (refunded)',
+  review_declined_canceled: 'Declined in review',
+  declined_canceled: 'Declined by fraud check',
+  evaluation_failed_hold: 'Fraud check failed (on hold)',
+  payment_action_failed: 'Payment action failed',
+}
+
+function fraudHoldLabel(state) {
+  return FRAUD_HOLD_LABELS[state] || 'On fraud hold'
+}
+
 export function FulfillmentPage() {
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
@@ -57,7 +73,10 @@ export function FulfillmentPage() {
       const res = await adminApiRequest(`/api/admin/analytics/orders/${orderId}/fulfill`, {
         method: 'POST',
       })
-      if (!res.ok) throw new Error('Failed to fulfill order')
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || 'Failed to fulfill order')
+      }
       await fetchOrders(direction, cursorNext || cursorPrev)
       setIsModalOpen(false)
       setSelectedOrder(null)
@@ -351,6 +370,11 @@ export function FulfillmentPage() {
                         >
                           {order.fulfillment?.fulfilled ? 'Fulfilled' : 'Open'}
                         </span>
+                        {order.fraudReview && !order.fraudReview.fulfillable && (
+                          <span className="mb-1 inline-flex w-fit items-center rounded-full px-2 py-0.5 text-xs font-medium bg-[var(--admin-warning-bg)] text-[var(--admin-warning)]">
+                            {fraudHoldLabel(order.fraudReview.state)}
+                          </span>
+                        )}
                         <span className="text-xs text-[var(--admin-text-muted)]">
                           {new Date(order.created * 1000).toLocaleString()}
                         </span>
@@ -550,7 +574,11 @@ export function FulfillmentPage() {
             </div>
 
             <div className="p-5 border-t border-[var(--admin-border-primary)] flex justify-between items-center">
-              {!selectedOrder.fulfillment?.fulfilled ? (
+              {selectedOrder.fraudReview && !selectedOrder.fraudReview.fulfillable && !selectedOrder.fulfillment?.fulfilled ? (
+                <div className="text-sm text-[var(--admin-warning)]">
+                  Do not ship: {fraudHoldLabel(selectedOrder.fraudReview.state)}
+                </div>
+              ) : !selectedOrder.fulfillment?.fulfilled ? (
                 <div className="text-sm text-[var(--admin-text-secondary)]">This order is ready for fulfillment</div>
               ) : (
                 <div className="inline-flex items-center gap-1 text-sm text-[var(--admin-success)] font-medium">
@@ -567,7 +595,7 @@ export function FulfillmentPage() {
                     Print Label
                   </Button>
                 )}
-                {!selectedOrder.fulfillment?.fulfilled && (
+                {!selectedOrder.fulfillment?.fulfilled && selectedOrder.fraudReview?.fulfillable !== false && (
                   <Button onClick={() => fulfillOrder(selectedOrder.id)} size="sm">
                     Fulfill Order
                   </Button>

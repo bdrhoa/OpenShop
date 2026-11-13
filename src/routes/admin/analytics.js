@@ -5,6 +5,8 @@ import { StripeService } from '../../services/StripeService.js'
 import { getKVNamespace } from '../../utils/kv.js'
 import { asyncHandler } from '../../middleware/errorHandler.js'
 import { resolveSetting } from '../../services/DeveloperSettingsService.js'
+import { FraudReviewService } from '../../services/FraudReviewService.js'
+import { APIError } from '../../utils/errors.js'
 
 const router = new Hono()
 
@@ -45,6 +47,15 @@ router.get('/orders', asyncHandler(async (c) => {
     kvNamespace
   })
 
+  // Kount REVIEW orders are captured but must not ship until a reviewer
+  // approves; declined or unresolved orders never ship.
+  if (kvNamespace && Array.isArray(orders.orders)) {
+    const fraud = new FraudReviewService({ kv: kvNamespace })
+    await Promise.all(orders.orders.map(async (order) => {
+      order.fraudReview = await fraud.getFulfillmentStatus(order.id)
+    }))
+  }
+
   return c.json(orders)
 }))
 
@@ -55,6 +66,11 @@ router.post('/orders/:orderId/fulfill', asyncHandler(async (c) => {
   
   if (!kvNamespace) {
     throw new Error('KV namespace not available')
+  }
+
+  const fraudStatus = await new FraudReviewService({ kv: kvNamespace }).getFulfillmentStatus(orderId)
+  if (!fraudStatus.fulfillable) {
+    throw new APIError(`This order cannot be fulfilled while its fraud review status is "${fraudStatus.state}".`, 409)
   }
 
   const fulfillmentKey = `order_fulfillment:${orderId}`
