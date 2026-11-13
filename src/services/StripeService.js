@@ -299,14 +299,21 @@ export class StripeService {
    */
   async getCheckoutSession(sessionId) {
     this.assertCheckoutAvailable()
-    const session = await this.stripe.checkout.sessions.retrieve(sessionId)
+    const session = await this.stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ['payment_intent'],
+    })
+    const paymentIntent = session.payment_intent && typeof session.payment_intent === 'object'
+      ? session.payment_intent
+      : null
     return {
       id: session.id,
       amount_total: session.amount_total,
       currency: session.currency,
       customer_email: session.customer_details?.email,
       payment_status: session.payment_status,
-      created: session.created
+      created: session.created,
+      // True when checkout held the payment for Kount (see docs/KOUNT.md).
+      fraud_hold: paymentIntent?.metadata?.[FRAUD_HOLD_METADATA_KEY] === '1',
     }
   }
 

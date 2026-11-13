@@ -24,6 +24,7 @@ These endpoints handle payment processing and checkout flows.
 |----------|--------|-------------|----------------|
 | `/api/create-checkout-session` | `POST` | Single item checkout | None |
 | `/api/create-cart-checkout-session` | `POST` | Multi-item cart checkout | None |
+| `/api/checkout-session/:sessionId` | `GET` | Order summary for the success page, including `order_status` (`confirmed`, `processing`, `declined`; see [KOUNT.md](./KOUNT.md)) | None |
 | `/api/stripe-webhook` | `POST` | Stripe events (signature-verified); starts Kount evaluation — see [KOUNT.md](./KOUNT.md) | Stripe signature |
 | `/api/kount-webhook` | `POST` | Kount order decision events (RSA-PSS signature + timestamp) | Kount signature |
 | `/api/image-proxy?src=<url>` | `GET` | Proxy for Google Drive raster images (JPEG/PNG/WebP/GIF/AVIF only) | None |

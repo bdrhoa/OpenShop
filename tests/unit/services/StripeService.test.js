@@ -383,9 +383,20 @@ describe('StripeService', () => {
         currency: 'usd',
         customer_email: 'test@example.com',
         payment_status: 'paid',
-        created: expect.any(Number)
+        created: expect.any(Number),
+        fraud_hold: false,
       })
-      expect(mockStripe.checkout.sessions.retrieve).toHaveBeenCalledWith(sessionId)
+      expect(mockStripe.checkout.sessions.retrieve).toHaveBeenCalledWith(sessionId, { expand: ['payment_intent'] })
+    })
+
+    it('reports a Kount fraud hold from the PaymentIntent metadata', async () => {
+      mockStripe.checkout.sessions.retrieve.mockResolvedValue({
+        id: 'cs_test123',
+        payment_intent: { id: 'pi_1', metadata: { kount_hold: '1' } },
+      })
+      const result = await stripeService.getCheckoutSession('cs_test123')
+      expect(result.fraud_hold).toBe(true)
+      expect(result).not.toHaveProperty('payment_intent')
     })
 
     it('throws a clean error when Stripe is not configured', async () => {

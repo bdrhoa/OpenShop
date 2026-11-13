@@ -436,7 +436,8 @@ describe('Checkout Process', () => {
       expect(data.currency).toBe('usd')
       expect(data.customer_email).toBe('test@example.com')
       expect(data.payment_status).toBe('paid')
-      expect(mockStripe.checkout.sessions.retrieve).toHaveBeenCalledWith(sessionId)
+      expect(mockStripe.checkout.sessions.retrieve).toHaveBeenCalledWith(sessionId, { expand: ['payment_intent'] })
+      expect(data.order_status).toBe('confirmed')
     })
 
     it('should return 400 for invalid sessionId format', async () => {
@@ -481,7 +482,7 @@ describe('Checkout Process', () => {
       const response = await executeRequest(app, request, env)
 
       expect(response.status).toBe(200)
-      expect(mockStripe.checkout.sessions.retrieve).toHaveBeenCalledWith(sessionId.trim())
+      expect(mockStripe.checkout.sessions.retrieve).toHaveBeenCalledWith(sessionId.trim(), { expand: ['payment_intent'] })
     })
   })
 })

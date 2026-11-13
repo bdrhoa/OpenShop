@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { FraudReviewService } from '../../../src/services/FraudReviewService.js'
+import { FraudReviewService, customerOrderStatus } from '../../../src/services/FraudReviewService.js'
 import { KountError } from '../../../src/services/KountService.js'
 import { FRAUD_STATES, KOUNT_KV_PREFIX } from '../../../src/config/kount.js'
 import { createMockKV } from '../../setup.js'
@@ -267,5 +267,29 @@ describe('FraudReviewService.getFulfillmentStatus', () => {
     }
     await kv.put(`${KOUNT_KV_PREFIX}cs_x`, JSON.stringify({ checkoutSessionId: 'cs_x', state: FRAUD_STATES.APPROVED_CAPTURED }))
     await expect(service.getFulfillmentStatus('cs_x')).resolves.toMatchObject({ fulfillable: true })
+  })
+})
+
+describe('FraudReviewService.getCustomerOrderStatus', () => {
+  it('maps fraud states to what the buyer is told', () => {
+    expect(customerOrderStatus(undefined)).toBe('processing')
+    expect(customerOrderStatus(FRAUD_STATES.EVALUATING)).toBe('processing')
+    expect(customerOrderStatus(FRAUD_STATES.EVALUATION_FAILED_HOLD)).toBe('processing')
+    expect(customerOrderStatus(FRAUD_STATES.PAYMENT_ACTION_FAILED)).toBe('processing')
+    expect(customerOrderStatus(FRAUD_STATES.APPROVED_CAPTURED)).toBe('confirmed')
+    expect(customerOrderStatus(FRAUD_STATES.REVIEW_CAPTURED)).toBe('confirmed')
+    expect(customerOrderStatus(FRAUD_STATES.REVIEW_APPROVED)).toBe('confirmed')
+    expect(customerOrderStatus(FRAUD_STATES.DECLINED_CANCELED)).toBe('declined')
+    expect(customerOrderStatus(FRAUD_STATES.REVIEW_DECLINED_REFUNDED)).toBe('declined')
+    expect(customerOrderStatus(FRAUD_STATES.REVIEW_DECLINED_REFUND_PENDING)).toBe('declined')
+  })
+
+  it('treats orders that were not held as confirmed and reads held ones from KV', async () => {
+    const kv = createMockKV()
+    const service = new FraudReviewService({ kv })
+    expect(await service.getCustomerOrderStatus('cs_x', { held: false })).toBe('confirmed')
+    expect(await service.getCustomerOrderStatus('cs_x', { held: true })).toBe('processing')
+    await kv.put(`${KOUNT_KV_PREFIX}cs_x`, JSON.stringify({ state: FRAUD_STATES.DECLINED_CANCELED }))
+    expect(await service.getCustomerOrderStatus('cs_x', { held: true })).toBe('declined')
   })
 })

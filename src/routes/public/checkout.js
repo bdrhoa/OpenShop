@@ -7,7 +7,7 @@ import { parseJsonBody } from '../../utils/request.js'
 import { resolveSetting } from '../../services/DeveloperSettingsService.js'
 import { getKVNamespace } from '../../utils/kv.js'
 import { CART_MAX_ITEMS, CART_MAX_ITEM_QUANTITY } from '../../config/index.js'
-import { resolveKountSettings } from '../../services/FraudReviewService.js'
+import { FraudReviewService, resolveKountSettings } from '../../services/FraudReviewService.js'
 import { normalizeDeviceSessionId } from '../../lib/kountOrder.js'
 
 const router = new Hono()
@@ -143,8 +143,12 @@ router.get('/checkout-session/:sessionId', asyncHandler(async (c) => {
     await resolveSetting(getKVNamespace(c.env), c.env, 'STRIPE_SECRET_KEY'),
     await resolveSetting(getKVNamespace(c.env), c.env, 'SITE_URL'),
   )
-  const session = await stripeService.getCheckoutSession(trimmedSessionId)
-  return c.json(session)
+  const { fraud_hold: held, ...session } = await stripeService.getCheckoutSession(trimmedSessionId)
+  // A held order is only settled once Kount has decided, which happens
+  // after the buyer lands on the success page. The page polls this status.
+  const orderStatus = await new FraudReviewService({ kv: getKVNamespace(c.env) })
+    .getCustomerOrderStatus(trimmedSessionId, { held })
+  return c.json({ ...session, order_status: orderStatus })
 }))
 
 export default router

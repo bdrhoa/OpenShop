@@ -187,6 +187,22 @@ describe('Kount integration', () => {
     expect((await parseJsonResponse(res)).state).toBe('review_declined_refunded')
   })
 
+  it('tells the buyer a held order is processing, then declined after Kount declines', async () => {
+    stripeMock.checkout.sessions.retrieve.mockResolvedValue({
+      id: 'cs_test_kount', payment_status: 'unpaid',
+      payment_intent: { id: 'pi_test_kount', metadata: { kount_hold: '1' } },
+    })
+    const lookup = () => executeRequest(app, createTestRequest('/api/checkout-session/cs_test_kount'), env)
+    let data = await parseJsonResponse(await lookup())
+    expect(data.order_status).toBe('processing')
+    expect(data).not.toHaveProperty('fraud_hold')
+
+    await env.TEST_KV.put(`${KOUNT_KV_PREFIX}cs_test_kount`, JSON.stringify({ state: 'declined_canceled' }))
+    data = await parseJsonResponse(await lookup())
+    expect(data.order_status).toBe('declined')
+    expect(Object.keys(data).sort()).toEqual(['id', 'order_status', 'payment_status'])
+  })
+
   it('rejects Stripe webhooks with a bad signature or without configuration', async () => {
     stripeMock.webhooks.constructEventAsync.mockRejectedValue(new Error('bad sig'))
     const bad = await executeRequest(app, createTestRequest('/api/stripe-webhook', {

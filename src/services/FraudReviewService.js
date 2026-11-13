@@ -240,6 +240,17 @@ export class FraudReviewService {
     return { fulfillable: FRAUD_FULFILLABLE_STATES.has(record.state), state: record.state }
   }
 
+  /**
+   * Buyer-facing order status for the storefront success page.
+   * @param {string} checkoutSessionId
+   * @param {{ held: boolean }} options - whether checkout held the payment for Kount
+   */
+  async getCustomerOrderStatus(checkoutSessionId, { held }) {
+    if (!held) return CUSTOMER_ORDER_STATUS.CONFIRMED
+    const record = await this.getRecord(checkoutSessionId)
+    return customerOrderStatus(record?.state)
+  }
+
   // ---- Stripe refund events ---------------------------------------------
 
   /**
@@ -405,6 +416,37 @@ export class FraudReviewService {
       return this.#save({ ...record, kountUpdateError: error.message }, 'kount_update_failed')
     }
   }
+}
+
+/**
+ * What the buyer is told about an order. Fraud details never reach the
+ * storefront: REVIEW orders read as confirmed (they are captured), and
+ * holds or failed payment actions read as processing.
+ */
+export const CUSTOMER_ORDER_STATUS = Object.freeze({
+  CONFIRMED: 'confirmed',
+  PROCESSING: 'processing',
+  DECLINED: 'declined',
+})
+
+const CUSTOMER_CONFIRMED_STATES = new Set([
+  FRAUD_STATES.APPROVED_CAPTURED,
+  FRAUD_STATES.REVIEW_CAPTURED,
+  FRAUD_STATES.REVIEW_APPROVED,
+])
+
+const CUSTOMER_DECLINED_STATES = new Set([
+  FRAUD_STATES.DECLINED_CANCELED,
+  FRAUD_STATES.REVIEW_DECLINED_CANCELED,
+  FRAUD_STATES.REVIEW_DECLINED_REFUNDED,
+  FRAUD_STATES.REVIEW_DECLINED_REFUND_PENDING,
+])
+
+/** Map a fraud record state (or none yet) to a buyer-facing status. */
+export function customerOrderStatus(state) {
+  if (CUSTOMER_CONFIRMED_STATES.has(state)) return CUSTOMER_ORDER_STATUS.CONFIRMED
+  if (CUSTOMER_DECLINED_STATES.has(state)) return CUSTOMER_ORDER_STATUS.DECLINED
+  return CUSTOMER_ORDER_STATUS.PROCESSING
 }
 
 /**

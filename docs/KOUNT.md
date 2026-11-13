@@ -28,6 +28,18 @@ per-browser-session id         capture_method=manual          (authorize only)
                                reviewer DECLINE → refund (stays blocked)
 ```
 
+### What the buyer sees
+
+Stripe sends the buyer to `/success` as soon as the card is authorized, usually before Kount has decided. `GET /api/checkout-session/:id` returns an `order_status`, and the success page polls it every 2 seconds for up to 30 seconds:
+
+| `order_status` | Fraud states | Success page |
+|---|---|---|
+| `processing` | no record yet, `evaluating`, `evaluation_failed_hold`, `payment_action_failed` | Spinner, then "Order received — we'll email you" if it hasn't settled |
+| `confirmed` | `approved_captured`, `review_captured`, `review_approved`, or an order not held for Kount | "Order Successful!" |
+| `declined` | `declined_canceled`, `review_declined_*` | "We couldn't complete your order" |
+
+REVIEW orders show as confirmed because they are captured. The response never includes Kount decisions, scores or the fraud state.
+
 ### REVIEW orders
 
 REVIEW orders are **captured right away**, so the payment isn't lost when Stripe's roughly 7-day authorization window runs out during a slow review. Fulfillment stays blocked until a reviewer decides:
