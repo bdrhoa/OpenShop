@@ -40,6 +40,7 @@ A declined card never completes hosted Checkout: the buyer sees Stripe's error a
 | Radar block (`outcome.type: blocked`), never sent to the card network | `UNKNOWN` | `stripe_radar_blocklist` (other Radar reasons: `stripe_radar_{reason}`) | `UNKNOWN` | omitted |
 | Any other decline (issuer decline, invalid card) | `DECLINED` | network decline code, else Stripe's `decline_code`, else `failure_code` | from `cvc_check` | from the address checks |
 
+- For a Radar block, OpenShop then marks that Kount order declined: `PATCH /commerce/v2/orders/{orderId}` (the `order.orderId` returned by the POST) with `{ "merchantOrderId": <same cs_…>, "deviceSessionId": <same session id>, "riskInquiry": { "decision": "DECLINED" } }`. `riskInquiry.decision` is not in the published Update Order schema (which allows extra fields), and `DECLINED` differs from the `DECLINE` decision value used elsewhere; this follows the integration owner's instruction. The PATCH is best effort: it is retried like any Kount call, and a failure is logged and saved on the report (`declinePatch: "failed"`, `declinePatchError`) without being resent. Issuer declines are not patched.
 - One report per failed charge (`kount:decline:{chargeId}`). Redeliveries are no-ops; a concurrent delivery gets `409`. Errors reaching Kount are retried (see [Failure handling](#failure-handling)). If the report still fails, or Kount rejects it, the report and its error are logged and saved as `failed`, and it is not sent again.
 
 ### What the buyer sees

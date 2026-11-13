@@ -340,7 +340,10 @@ export class FraudReviewService {
 
     try {
       const { kountOrderId } = await this.kount.submitOrder(orderBody)
-      const report = await this.#putJson(key, { ...base, state: DECLINE_REPORT_STATES.SUBMITTED, kountOrderId })
+      let report = await this.#putJson(key, { ...base, state: DECLINE_REPORT_STATES.SUBMITTED, kountOrderId })
+      if (authorization.authResult === 'UNKNOWN') {
+        report = await this.#markBlockedOrderDeclined(key, report, orderBody)
+      }
       return { status: 'done', report }
     } catch (error) {
       // KountService already retried errors reaching Kount; log and stop.
@@ -357,6 +360,43 @@ export class FraudReviewService {
       })
       console.error('[FraudReview] Kount decline report failed', JSON.stringify(report))
       return { status: 'done', report }
+    }
+  }
+
+  /**
+   * Stripe blocked the payment (Radar), so tell Kount the order it just
+   * recorded was declined: PATCH /commerce/v2/orders/{orderId} with the same
+   * merchantOrderId and device session id and riskInquiry.decision DECLINED.
+   * Best effort: a failure is logged and saved on the report, never resent.
+   */
+  async #markBlockedOrderDeclined(key, report, orderBody) {
+    if (!report.kountOrderId) {
+      console.error('[FraudReview] Kount returned no order id; cannot mark the blocked order declined', JSON.stringify(report))
+      return this.#putJson(key, { ...report, declinePatch: 'failed', declinePatchError: { message: 'No Kount order id in the response' } })
+    }
+    const patch = {
+      merchantOrderId: orderBody.merchantOrderId,
+      deviceSessionId: orderBody.deviceSessionId,
+      riskInquiry: { decision: 'DECLINED' },
+    }
+    if (!patch.deviceSessionId) delete patch.deviceSessionId
+    try {
+      await this.kount.updateOrder(report.kountOrderId, patch)
+      return this.#putJson(key, { ...report, declinePatch: 'sent' })
+    } catch (error) {
+      const next = await this.#putJson(key, {
+        ...report,
+        declinePatch: 'failed',
+        declinePatchError: {
+          message: error?.message || String(error),
+          status: error?.status ?? null,
+          attempts: error?.attempts ?? null,
+          exhausted: Boolean(error?.exhausted),
+          correlationId: error?.correlationId || null,
+        },
+      })
+      console.error('[FraudReview] Kount decline PATCH failed', JSON.stringify(next))
+      return next
     }
   }
 

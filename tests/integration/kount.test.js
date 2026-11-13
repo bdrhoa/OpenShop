@@ -230,8 +230,14 @@ describe('Kount integration', () => {
     expect((await parseJsonResponse(res)).state).toBe('submitted')
 
     const orderCalls = fetchSpy.mock.calls.filter(([url]) => String(url).includes('/commerce/v2/orders'))
-    expect(orderCalls).toHaveLength(1)
+    expect(orderCalls).toHaveLength(2)
     expect(String(orderCalls[0][0])).toContain('riskInquiry=false')
+    // Then the order Kount returned is marked DECLINED.
+    expect(String(orderCalls[1][0])).toMatch(/\/commerce\/v2\/orders\/K1$/)
+    expect(orderCalls[1][1].method).toBe('PATCH')
+    expect(JSON.parse(orderCalls[1][1].body)).toEqual({
+      merchantOrderId: 'cs_test_kount', deviceSessionId: 'abc123', riskInquiry: { decision: 'DECLINED' },
+    })
     const tx = JSON.parse(orderCalls[0][1].body).transactions[0]
     expect(tx.transactionStatus).toBe('REFUSED')
     expect(tx.authorizationStatus).toMatchObject({
@@ -241,7 +247,7 @@ describe('Kount integration', () => {
 
     // A redelivery of the same event is not sent again.
     expect((await send()).status).toBe(200)
-    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes('/commerce/v2/orders'))).toHaveLength(1)
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes('/commerce/v2/orders'))).toHaveLength(2)
   })
 
   it('rejects Stripe webhooks with a bad signature or without configuration', async () => {

@@ -22,7 +22,7 @@
 | `kount:order:{checkoutSessionId}` | Kount fraud review record: state, decision (`decisionSource: fallback` and `evaluationError` when Kount gave none), PaymentIntent id, Kount order/transaction ids, history (see [KOUNT.md](../KOUNT.md)) |
 | `kount:kountorder:{kountOrderId}` | Index: Kount order id → Checkout Session id |
 | `kount:pi:{paymentIntentId}` | Index: PaymentIntent id → Checkout Session id (refund webhooks) |
-| `kount:decline:{chargeId}` | Declined payment attempt reported to Kount: state (`submitting`, `submitted`, `failed`), Kount order id, authResult, declineCode |
+| `kount:decline:{chargeId}` | Declined payment attempt reported to Kount: state (`submitting`, `submitted`, `failed`), `declinePatch` (`sent`/`failed`) for Radar blocks, Kount order id, authResult, declineCode |
 | `storefront:page:{slug}` | Puck page-builder document (core slugs `home`/`about` plus admin-created dynamic pages; slugs match `[a-z0-9]+(-[a-z0-9]+)*`, reserved route words rejected — see `src/lib/pageContent.js`) |
 
 ## Product shape (typical)

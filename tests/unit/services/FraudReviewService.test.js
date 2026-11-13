@@ -368,6 +368,36 @@ describe('FraudReviewService.handlePaymentFailed', () => {
     expect(await service.getRecord('cs_test_1')).toBeNull()
   })
 
+  it('marks a Radar-blocked order DECLINED in Kount with a PATCH', async () => {
+    const { service, kount } = makeDeclineDeps()
+    const result = await service.handlePaymentFailed(failedPi())
+    expect(kount.updateOrder).toHaveBeenCalledWith('KD1', {
+      merchantOrderId: 'cs_test_1',
+      deviceSessionId: 'dev123',
+      riskInquiry: { decision: 'DECLINED' },
+    })
+    expect(result.report).toMatchObject({ state: 'submitted', declinePatch: 'sent' })
+  })
+
+  it('does not PATCH issuer declines', async () => {
+    const { service, kount, stripe } = makeDeclineDeps()
+    const context = await stripe.getFailedAttemptContext()
+    stripe.getFailedAttemptContext.mockResolvedValue({ ...context, charge: { ...context.charge, outcome: { type: 'issuer_declined' } } })
+    const result = await service.handlePaymentFailed(failedPi())
+    expect(kount.updateOrder).not.toHaveBeenCalled()
+    expect(result.report.declinePatch).toBeUndefined()
+  })
+
+  it('logs and records a failed decline PATCH without failing the report', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { service, kount } = makeDeclineDeps()
+    kount.updateOrder.mockRejectedValue(Object.assign(new KountError('Kount PATCH returned 503', { status: 503, retryable: true }), { attempts: 4, exhausted: true }))
+    const result = await service.handlePaymentFailed(failedPi())
+    expect(result.report).toMatchObject({ state: 'submitted', kountOrderId: 'KD1', declinePatch: 'failed', declinePatchError: { status: 503, attempts: 4 } })
+    expect(log.mock.calls.some(([msg]) => String(msg).includes('decline PATCH failed'))).toBe(true)
+    log.mockRestore()
+  })
+
   it('reports each failed charge once', async () => {
     const { service, kount } = makeDeclineDeps()
     await service.handlePaymentFailed(failedPi())
