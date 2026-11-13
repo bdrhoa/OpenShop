@@ -61,9 +61,6 @@ router.post('/stripe-webhook', asyncHandler(async (c) => {
     if (result.status === 'in_progress') {
       return c.json({ error: 'Decline report in progress' }, 409)
     }
-    if (result.status === 'retry') {
-      return c.json({ error: 'Kount unavailable; retry later' }, 503)
-    }
     return c.json({ received: true, status: result.status, state: result.report?.state })
   }
 

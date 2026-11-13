@@ -22,10 +22,12 @@ import {
   FRAUD_FULFILLABLE_STATES,
   KOUNT_DECLINE_KV_PREFIX,
   DECLINE_REPORT_STATES,
+  KOUNT_FALLBACK_DECISIONS,
+  KOUNT_DEFAULT_FALLBACK_DECISION,
 } from '../config/kount.js'
 import { buildKountOrder, mapFailedAuthorization } from '../lib/kountOrder.js'
 import { FRAUD_HOLD_METADATA_KEY, StripeService } from './StripeService.js'
-import { KountService, isKountConfigured } from './KountService.js'
+import { KountService, isKountConfigured, normalizeMaxRetries } from './KountService.js'
 import { resolveSetting } from './DeveloperSettingsService.js'
 
 const KOUNT_ORDER_INDEX_PREFIX = 'kount:kountorder:'
@@ -38,11 +40,14 @@ export class FraudReviewService {
    * @param {object} deps.kv - KV namespace
    * @param {import('./StripeService.js').StripeService} deps.stripe
    * @param {import('./KountService.js').KountService} deps.kount
+   * @param {'APPROVE'|'DECLINE'} [deps.fallbackDecision] - Decision assumed
+   *   when Kount cannot give one after retries (default APPROVE)
    */
-  constructor({ kv, stripe, kount }) {
+  constructor({ kv, stripe, kount, fallbackDecision = KOUNT_DEFAULT_FALLBACK_DECISION }) {
     this.kv = kv
     this.stripe = stripe
     this.kount = kount
+    this.fallbackDecision = normalizeFallbackDecision(fallbackDecision)
   }
 
   // ---- records -----------------------------------------------------------
@@ -110,14 +115,12 @@ export class FraudReviewService {
       if (age < KOUNT_EVALUATION_STALE_MS) {
         return { status: 'in_progress', record: existing }
       }
-      // A previous attempt started but never recorded an outcome. Kount may
-      // have accepted the order; re-submitting could create a duplicate, so
-      // hold the authorization for reconciliation instead.
-      const record = await this.#save({
-        ...existing,
-        state: FRAUD_STATES.EVALUATION_FAILED_HOLD,
-        error: 'Evaluation outcome unknown (stale in-progress record). Reconcile in the Kount portal before capturing.',
-      }, 'stale_evaluation')
+      // A previous attempt started but never recorded an outcome (the
+      // Worker was stopped mid-evaluation). Treat it like any failure to
+      // get a decision: apply the fallback decision.
+      const record = await this.#applyFallbackDecision(existing, {
+        message: 'Evaluation never finished (stale in-progress record)',
+      })
       return { status: 'done', record }
     }
 
@@ -159,15 +162,7 @@ export class FraudReviewService {
     try {
       evaluation = await this.kount.evaluateOrder(orderBody)
     } catch (error) {
-      console.error('[FraudReview] Kount evaluation failed:', error.message)
-      record = await this.#save({
-        ...record,
-        state: FRAUD_STATES.EVALUATION_FAILED_HOLD,
-        error: error.uncertain
-          ? 'Kount evaluation outcome unknown. Reconcile in the Kount portal before capturing.'
-          : `Kount evaluation failed${error.status ? ` (HTTP ${error.status})` : ''}.`,
-        kountCorrelationId: error.correlationId || undefined,
-      }, 'evaluation_failed')
+      record = await this.#applyFallbackDecision(record, error)
       return { status: 'done', record }
     }
 
@@ -192,13 +187,46 @@ export class FraudReviewService {
         record = await this.#capture(record, FRAUD_STATES.REVIEW_CAPTURED)
         break
       default:
-        record = await this.#save({
-          ...record,
-          state: FRAUD_STATES.EVALUATION_FAILED_HOLD,
-          error: 'Kount response had no recognizable decision.',
-        }, 'decision_missing')
+        record = await this.#applyFallbackDecision(record, {
+          message: 'Kount response had no recognizable decision',
+          correlationId: evaluation.correlationId,
+        })
     }
     return { status: 'done', record }
+  }
+
+  /**
+   * No Kount decision could be obtained (retries exhausted, a rejected
+   * request, a missing decision, or an evaluation that never finished).
+   * Log the transaction and its error, then act on the configured fallback
+   * decision as if Kount had returned it.
+   */
+  async #applyFallbackDecision(record, error) {
+    const decision = this.fallbackDecision
+    const evaluationError = {
+      message: error?.message || String(error),
+      status: error?.status ?? null,
+      attempts: error?.attempts ?? null,
+      exhausted: Boolean(error?.exhausted),
+      correlationId: error?.correlationId || null,
+    }
+    console.error('[FraudReview] No Kount decision; applying fallback decision', JSON.stringify({
+      checkoutSessionId: record.checkoutSessionId,
+      paymentIntentId: record.paymentIntentId,
+      amount: record.amount,
+      currency: record.currency,
+      fallbackDecision: decision,
+      error: evaluationError,
+    }))
+    const next = await this.#save({
+      ...record,
+      decision,
+      decisionSource: 'fallback',
+      evaluationError,
+    }, `fallback_${decision}`)
+    return decision === 'DECLINE'
+      ? this.#cancel(next, FRAUD_STATES.DECLINED_CANCELED)
+      : this.#capture(next, FRAUD_STATES.APPROVED_CAPTURED)
   }
 
   // ---- Kount webhook ----------------------------------------------------
@@ -260,7 +288,7 @@ export class FraudReviewService {
    * as data only (no risk inquiry), so declines feed Kount's model. Nothing
    * changes in Stripe or for the buyer. One report per failed charge.
    * @param {object} paymentIntent - Stripe PaymentIntent from the verified event
-   * @returns {Promise<{ status: 'done'|'ignored'|'in_progress'|'retry', reason?: string, report?: object }>}
+   * @returns {Promise<{ status: 'done'|'ignored'|'in_progress', reason?: string, report?: object }>}
    */
   async handlePaymentFailed(paymentIntent) {
     if (!paymentIntent?.id || paymentIntent.metadata?.[FRAUD_HOLD_METADATA_KEY] !== '1') {
@@ -278,8 +306,9 @@ export class FraudReviewService {
         return { status: 'in_progress', report: existing }
       }
       if (existing.state === DECLINE_REPORT_STATES.SUBMITTING) {
-        // Started but never finished: Kount may have it, so don't resubmit.
-        const report = await this.#putJson(key, { ...existing, state: DECLINE_REPORT_STATES.UNCERTAIN, error: 'Submission outcome unknown (stale)' })
+        // Started but never finished (the Worker was stopped mid-report).
+        const report = await this.#putJson(key, { ...existing, state: DECLINE_REPORT_STATES.FAILED, error: 'Submission never finished (stale)' })
+        console.error('[FraudReview] Kount decline report failed', JSON.stringify(report))
         return { status: 'done', report }
       }
       return { status: 'done', reason: 'already_reported', report: existing }
@@ -314,19 +343,20 @@ export class FraudReviewService {
       const report = await this.#putJson(key, { ...base, state: DECLINE_REPORT_STATES.SUBMITTED, kountOrderId })
       return { status: 'done', report }
     } catch (error) {
-      console.error('[FraudReview] Kount decline report failed:', error.message)
-      if (error.uncertain) {
-        const report = await this.#putJson(key, { ...base, state: DECLINE_REPORT_STATES.UNCERTAIN, error: error.message })
-        return { status: 'done', report }
-      }
-      if (error.status >= 400 && error.status < 500) {
-        const report = await this.#putJson(key, { ...base, state: DECLINE_REPORT_STATES.REJECTED, error: error.message })
-        return { status: 'done', report }
-      }
-      // Kount certainly did not record it (e.g. token failure, retries
-      // exhausted on 429/503). Clear the marker so Stripe's retry resubmits.
-      await this.kv.delete(key)
-      return { status: 'retry', reason: error.message }
+      // KountService already retried errors reaching Kount; log and stop.
+      const report = await this.#putJson(key, {
+        ...base,
+        state: DECLINE_REPORT_STATES.FAILED,
+        error: {
+          message: error?.message || String(error),
+          status: error?.status ?? null,
+          attempts: error?.attempts ?? null,
+          exhausted: Boolean(error?.exhausted),
+          correlationId: error?.correlationId || null,
+        },
+      })
+      console.error('[FraudReview] Kount decline report failed', JSON.stringify(report))
+      return { status: 'done', report }
     }
   }
 
@@ -545,12 +575,27 @@ export function customerOrderStatus(state) {
  * @returns {Promise<{ enabled: boolean, clientId: string|undefined, apiKey: string|undefined, webhookPublicKey: string|undefined }>}
  */
 export async function resolveKountSettings(kv, env) {
-  const [clientId, apiKey, webhookPublicKey] = await Promise.all([
+  const [clientId, apiKey, webhookPublicKey, maxRetries, fallbackDecision] = await Promise.all([
     resolveSetting(kv, env, 'KOUNT_CLIENT_ID'),
     resolveSetting(kv, env, 'KOUNT_API_KEY'),
     resolveSetting(kv, env, 'KOUNT_WEBHOOK_PUBLIC_KEY'),
+    resolveSetting(kv, env, 'KOUNT_MAX_RETRIES'),
+    resolveSetting(kv, env, 'KOUNT_FALLBACK_DECISION'),
   ])
-  return { enabled: isKountConfigured(clientId, apiKey), clientId, apiKey, webhookPublicKey }
+  return {
+    enabled: isKountConfigured(clientId, apiKey),
+    clientId,
+    apiKey,
+    webhookPublicKey,
+    maxRetries: normalizeMaxRetries(maxRetries),
+    fallbackDecision: normalizeFallbackDecision(fallbackDecision),
+  }
+}
+
+/** APPROVE or DECLINE; anything else falls back to the default (APPROVE). */
+export function normalizeFallbackDecision(value) {
+  const upper = String(value ?? '').trim().toUpperCase()
+  return KOUNT_FALLBACK_DECISIONS.includes(upper) ? upper : KOUNT_DEFAULT_FALLBACK_DECISION
 }
 
 /** Build a FraudReviewService wired to this request's settings. */
@@ -563,6 +608,7 @@ export async function createFraudReviewService(kv, env) {
   return new FraudReviewService({
     kv,
     stripe: new StripeService(stripeKey, siteUrl),
-    kount: new KountService({ clientId: kount.clientId, apiKey: kount.apiKey }),
+    kount: new KountService({ clientId: kount.clientId, apiKey: kount.apiKey, maxRetries: kount.maxRetries }),
+    fallbackDecision: kount.fallbackDecision,
   })
 }

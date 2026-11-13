@@ -3,28 +3,39 @@
 // - Bearer tokens come from the client_credentials grant, sent with the
 //   portal API key as the Basic credential, and are cached per isolate until
 //   shortly before expiry. Concurrent callers share one in-flight refresh.
-// - Evaluate Order is a write. It is retried only when Kount explicitly did
-//   not process the request (429/503) or the token was rejected (401).
-//   Timeouts and other failures surface as KountError with `uncertain: true`
-//   so callers reconcile instead of re-submitting.
+// - Errors reaching Kount (network errors, timeouts, 408, 429, 5xx) are
+//   retried with exponential backoff and full jitter (exponential-backoff),
+//   up to `maxRetries` retries. A 401 refreshes the token and retries. Other
+//   4xx responses are not retried. Retrying an order write after a timeout
+//   or 5xx can create a duplicate order in Kount if the first one landed.
+// - When retries run out the last KountError is thrown with
+//   `exhausted: true`; callers decide what to do (see FraudReviewService).
+import { backOff } from 'exponential-backoff'
 import {
   KOUNT_SANDBOX,
   KOUNT_TOKEN_SCOPE,
   KOUNT_TOKEN_REFRESH_SKEW_MS,
   KOUNT_REQUEST_TIMEOUT_MS,
-  KOUNT_MAX_ATTEMPTS,
+  KOUNT_DEFAULT_MAX_RETRIES,
   KOUNT_BACKOFF_BASE_MS,
   KOUNT_BACKOFF_MAX_MS,
 } from '../config/kount.js'
 import { parseEvaluateResponse } from '../lib/kountOrder.js'
 
 export class KountError extends Error {
-  constructor(message, { status = null, uncertain = false, correlationId = null } = {}) {
+  constructor(message, { status = null, uncertain = false, retryable = false, correlationId = null } = {}) {
     super(message)
     this.name = 'KountError'
     this.status = status
+    // Kount may have processed the request (timeout or 5xx on a write).
     this.uncertain = uncertain
+    // An error reaching Kount that is worth retrying.
+    this.retryable = retryable
     this.correlationId = correlationId
+    // Set when thrown after retries: how many attempts were made, and
+    // whether the retry budget ran out.
+    this.attempts = 1
+    this.exhausted = false
   }
 }
 
@@ -42,14 +53,15 @@ export function resetKountTokenCache() {
   tokenCache.clear()
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+/** HTTP statuses that mean Kount was not reached or could not answer. */
+function isRetryableStatus(status) {
+  return status === 408 || status === 429 || status >= 500
+}
 
-function backoffDelay(attempt, retryAfterHeader) {
-  const retryAfter = Number(retryAfterHeader)
-  if (Number.isFinite(retryAfter) && retryAfter >= 0) {
-    return Math.min(retryAfter * 1000, KOUNT_BACKOFF_MAX_MS)
-  }
-  return Math.min(KOUNT_BACKOFF_BASE_MS * 2 ** attempt, KOUNT_BACKOFF_MAX_MS)
+/** Clamp a configured retry count to a sane integer. */
+export function normalizeMaxRetries(value) {
+  const n = Number.parseInt(value, 10)
+  return Number.isInteger(n) && n >= 0 ? n : KOUNT_DEFAULT_MAX_RETRIES
 }
 
 /**
@@ -69,14 +81,16 @@ export class KountService {
    * @param {object} opts
    * @param {string} opts.clientId
    * @param {string} opts.apiKey
+   * @param {number} [opts.maxRetries] - Retries after the first attempt (default 3)
    * @param {typeof fetch} [opts.fetchImpl]
-   * @param {(ms:number)=>Promise<void>} [opts.sleepImpl]
+   * @param {object} [opts.backoffOptions] - exponential-backoff overrides (tests)
    */
-  constructor({ clientId, apiKey, fetchImpl, sleepImpl } = {}) {
+  constructor({ clientId, apiKey, maxRetries = KOUNT_DEFAULT_MAX_RETRIES, fetchImpl, backoffOptions } = {}) {
     this.clientId = clientId
     this.apiKey = normalizeApiKey(apiKey)
+    this.maxRetries = normalizeMaxRetries(maxRetries)
     this.fetch = fetchImpl || ((...args) => fetch(...args))
-    this.sleep = sleepImpl || sleep
+    this.backoffOptions = backoffOptions || {}
     this.config = KOUNT_SANDBOX
   }
 
@@ -88,9 +102,39 @@ export class KountService {
     return this.fetch(url, { ...init, signal: AbortSignal.timeout(KOUNT_REQUEST_TIMEOUT_MS) })
   }
 
+  /**
+   * Run `attempt` with exponential backoff and full jitter. Retries only
+   * KountErrors marked retryable. The error that ends the loop carries the
+   * attempt count and whether the retry budget was exhausted.
+   */
+  async #withRetry(attempt) {
+    const numOfAttempts = this.maxRetries + 1
+    let attempts = 0
+    try {
+      return await backOff(async () => {
+        attempts++
+        return attempt(attempts)
+      }, {
+        numOfAttempts,
+        startingDelay: KOUNT_BACKOFF_BASE_MS,
+        timeMultiple: 2,
+        maxDelay: KOUNT_BACKOFF_MAX_MS,
+        jitter: 'full',
+        ...this.backoffOptions,
+        retry: (error) => error instanceof KountError && error.retryable,
+      })
+    } catch (error) {
+      const kountError = error instanceof KountError
+        ? error
+        : new KountError(`Kount request failed: ${error?.message || error}`)
+      kountError.attempts = Math.max(kountError.attempts, attempts)
+      kountError.exhausted = kountError.exhausted || (kountError.retryable && attempts >= numOfAttempts)
+      throw kountError
+    }
+  }
+
   async #requestToken() {
-    let lastError
-    for (let attempt = 0; attempt < KOUNT_MAX_ATTEMPTS; attempt++) {
+    return this.#withRetry(async () => {
       let response
       try {
         response = await this.#fetchWithTimeout(this.config.tokenUrl, {
@@ -102,10 +146,7 @@ export class KountService {
           body: new URLSearchParams({ grant_type: 'client_credentials', scope: KOUNT_TOKEN_SCOPE }).toString(),
         })
       } catch (error) {
-        // Token requests are safe to retry.
-        lastError = new KountError(`Kount token request failed: ${error.name || 'network error'}`)
-        await this.sleep(backoffDelay(attempt))
-        continue
+        throw new KountError(`Kount token request failed: ${error.name || 'network error'}`, { retryable: true })
       }
 
       if (response.ok) {
@@ -115,12 +156,12 @@ export class KountService {
         return { token: body.access_token, expiresAt: Date.now() + expiresInMs }
       }
 
-      lastError = new KountError(`Kount token request returned ${response.status}`, { status: response.status })
       // 400/401/403 are credential problems — retrying will not help.
-      if (response.status !== 429 && response.status < 500) throw lastError
-      await this.sleep(backoffDelay(attempt, response.headers.get('Retry-After')))
-    }
-    throw lastError
+      throw new KountError(`Kount token request returned ${response.status}`, {
+        status: response.status,
+        retryable: isRetryableStatus(response.status),
+      })
+    })
   }
 
   /** Get a cached bearer token, refreshing shortly before expiry. */
@@ -150,15 +191,23 @@ export class KountService {
   }
 
   /**
-   * Authenticated JSON request. Retries 401 once with a fresh token and
-   * 429/503 with bounded backoff. Any other failure is returned to the caller.
+   * Authenticated JSON request, retried with backoff on errors reaching
+   * Kount. A 401 refreshes the token before the next attempt.
    */
   async #apiRequest(method, path, body) {
     const url = `${this.config.apiBaseUrl}${path}`
-    let refreshed = false
+    let refreshToken = false
 
-    for (let attempt = 0; attempt < KOUNT_MAX_ATTEMPTS; attempt++) {
-      const token = await this.getAccessToken()
+    return this.#withRetry(async () => {
+      let token
+      try {
+        token = await this.getAccessToken({ forceRefresh: refreshToken })
+      } catch (error) {
+        // Token requests already ran their own retries; don't multiply them.
+        if (error instanceof KountError) error.retryable = false
+        throw error
+      }
+      refreshToken = false
       let response
       try {
         response = await this.#fetchWithTimeout(url, {
@@ -170,37 +219,31 @@ export class KountService {
           body: body === undefined ? undefined : JSON.stringify(body),
         })
       } catch (error) {
-        // The request may have reached Kount. Do not retry a write.
-        throw new KountError(`Kount ${method} ${path} did not complete: ${error.name || 'network error'}`, { uncertain: true })
+        // The request may have reached Kount, so the outcome is uncertain.
+        throw new KountError(`Kount ${method} ${path} did not complete: ${error.name || 'network error'}`, {
+          uncertain: true,
+          retryable: true,
+        })
       }
 
       const correlationId = response.headers.get('X-Correlation-Id')
-
       if (response.ok) {
         return { body: await response.json().catch(() => ({})), correlationId }
       }
 
-      if (response.status === 401 && !refreshed) {
-        // A 401 means the request was rejected before processing; refresh
-        // the token once and resend.
-        refreshed = true
-        await this.getAccessToken({ forceRefresh: true })
-        continue
+      if (response.status === 401) {
+        // Rejected before processing: refresh the token and try again.
+        refreshToken = true
+        throw new KountError(`Kount ${method} ${path} returned 401`, { status: 401, retryable: true, correlationId })
       }
 
-      if ((response.status === 429 || response.status === 503) && attempt < KOUNT_MAX_ATTEMPTS - 1) {
-        await this.sleep(backoffDelay(attempt, response.headers.get('Retry-After')))
-        continue
-      }
-
-      // 500 and other statuses: the outcome is unknown for writes.
       throw new KountError(`Kount ${method} ${path} returned ${response.status}`, {
         status: response.status,
         uncertain: response.status >= 500,
+        retryable: isRetryableStatus(response.status),
         correlationId,
       })
-    }
-    throw new KountError(`Kount ${method} ${path} exhausted retries`, { uncertain: false })
+    })
   }
 
   /** POST /commerce/v2/orders?riskInquiry=true */

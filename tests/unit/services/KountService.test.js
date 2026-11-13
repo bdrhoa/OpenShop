@@ -8,9 +8,12 @@ function jsonResponse(status, body, headers = {}) {
 const TOKEN_URL = 'https://login-uat.equifax.com/as/token'
 const ORDERS_URL = 'https://api-sandbox.kount.com/commerce/v2/orders?riskInquiry=true'
 
-function makeService(handler) {
+// No real waiting between attempts in tests.
+const NO_DELAY = { startingDelay: 0, maxDelay: 0 }
+
+function makeService(handler, { maxRetries } = {}) {
   const fetchImpl = vi.fn(handler)
-  const service = new KountService({ clientId: 'client', apiKey: 'synthetic-key', fetchImpl, sleepImpl: async () => {} })
+  const service = new KountService({ clientId: 'client', apiKey: 'synthetic-key', fetchImpl, maxRetries, backoffOptions: NO_DELAY })
   return { service, fetchImpl }
 }
 
@@ -87,7 +90,7 @@ describe('KountService', () => {
     expect(orderCalls).toBe(3)
   })
 
-  it('does not retry an order write after a network failure and marks it uncertain', async () => {
+  it('retries network failures and timeouts, then reports exhaustion (default 3 retries)', async () => {
     let orderCalls = 0
     const { service } = makeService(async (url) => {
       if (url === TOKEN_URL) return jsonResponse(200, { access_token: 'tok', expires_in: 1200 })
@@ -96,21 +99,79 @@ describe('KountService', () => {
     })
     const error = await service.evaluateOrder({}).catch((e) => e)
     expect(error).toBeInstanceOf(KountError)
-    expect(error.uncertain).toBe(true)
-    expect(orderCalls).toBe(1)
+    expect(error).toMatchObject({ uncertain: true, exhausted: true, attempts: 4 })
+    expect(orderCalls).toBe(4)
   })
 
-  it('marks 500 as uncertain and 400 as certain', async () => {
-    for (const [status, uncertain] of [[500, true], [400, false]]) {
+  it('honors the configured retry count', async () => {
+    for (const [maxRetries, expectedCalls] of [[0, 1], [1, 2], [5, 6]]) {
       resetKountTokenCache()
-      const { service } = makeService(async (url) => url === TOKEN_URL
-        ? jsonResponse(200, { access_token: 'tok', expires_in: 1200 })
-        : jsonResponse(status, {}, { 'X-Correlation-Id': 'corr-1' }))
+      let orderCalls = 0
+      const { service } = makeService(async (url) => {
+        if (url === TOKEN_URL) return jsonResponse(200, { access_token: 'tok', expires_in: 1200 })
+        orderCalls++
+        return jsonResponse(503, {})
+      }, { maxRetries })
       const error = await service.evaluateOrder({}).catch((e) => e)
-      expect(error.status).toBe(status)
-      expect(error.uncertain).toBe(uncertain)
-      expect(error.correlationId).toBe('corr-1')
+      expect(orderCalls).toBe(expectedCalls)
+      expect(error).toMatchObject({ status: 503, exhausted: true, attempts: expectedCalls })
     }
+  })
+
+  it('recovers when a retry succeeds after 5xx', async () => {
+    let orderCalls = 0
+    const { service } = makeService(async (url) => {
+      if (url === TOKEN_URL) return jsonResponse(200, { access_token: 'tok', expires_in: 1200 })
+      orderCalls++
+      return orderCalls < 3 ? jsonResponse(500, {}) : jsonResponse(200, evaluateBody)
+    })
+    await expect(service.evaluateOrder({})).resolves.toMatchObject({ decision: 'APPROVE' })
+    expect(orderCalls).toBe(3)
+  })
+
+  it('does not retry a 400 and keeps the correlation id', async () => {
+    let orderCalls = 0
+    const { service } = makeService(async (url) => {
+      if (url === TOKEN_URL) return jsonResponse(200, { access_token: 'tok', expires_in: 1200 })
+      orderCalls++
+      return jsonResponse(400, {}, { 'X-Correlation-Id': 'corr-1' })
+    })
+    const error = await service.evaluateOrder({}).catch((e) => e)
+    expect(orderCalls).toBe(1)
+    expect(error).toMatchObject({ status: 400, uncertain: false, exhausted: false, correlationId: 'corr-1' })
+  })
+
+  it('uses exponential backoff with full jitter between attempts', async () => {
+    const delays = []
+    const realSetTimeout = globalThis.setTimeout
+    const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((fn, ms, ...args) => {
+      delays.push(ms)
+      return realSetTimeout(fn, 0, ...args)
+    })
+    try {
+      const fetchImpl = vi.fn(async (url) => url === TOKEN_URL
+        ? jsonResponse(200, { access_token: 'tok', expires_in: 1200 })
+        : jsonResponse(503, {}))
+      const service = new KountService({ clientId: 'client', apiKey: 'synthetic-key', fetchImpl, maxRetries: 3 })
+      await service.evaluateOrder({}).catch(() => {})
+    } finally {
+      spy.mockRestore()
+    }
+    const backoffDelays = delays.filter((ms) => typeof ms === 'number' && ms > 0 && ms <= 2000)
+    // Full jitter: each wait is random in [0, 250 * 2^n], capped at 2s.
+    expect(backoffDelays.length).toBeLessThanOrEqual(3)
+    backoffDelays.forEach((ms, i) => expect(ms).toBeLessThanOrEqual(250 * 2 ** (i + 1)))
+  })
+
+  it('retries token requests on 5xx but not credential errors', async () => {
+    let calls = 0
+    const { service: flaky } = makeService(async () => {
+      calls++
+      return calls < 2 ? jsonResponse(502, {}) : jsonResponse(200, { access_token: 'tok', expires_in: 1200 })
+    })
+    await expect(flaky.getAccessToken()).resolves.toBe('tok')
+    expect(calls).toBe(2)
+    resetKountTokenCache()
   })
 
   it('does not retry token credential errors', async () => {

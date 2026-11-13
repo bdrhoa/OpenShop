@@ -96,6 +96,45 @@ describe('Developer Settings', () => {
     expect(res.status).toBe(400)
   })
 
+  describe('Kount retry and fallback settings', () => {
+    const put = (body) => executeRequest(app, createTestRequest('/api/admin/developer-settings', {
+      method: 'PUT',
+      headers: createAdminHeaders(adminToken),
+      body: JSON.stringify(body),
+    }), env)
+
+    it('defaults to 3 retries and an APPROVE fallback', async () => {
+      const res = await executeRequest(app, createTestRequest('/api/admin/developer-settings', {
+        headers: createAdminHeaders(adminToken),
+      }), env)
+      const { fields } = await parseJsonResponse(res)
+      expect(fields.find((f) => f.key === 'KOUNT_MAX_RETRIES')).toMatchObject({ defaultValue: '3', integer: true, source: 'unset' })
+      expect(fields.find((f) => f.key === 'KOUNT_FALLBACK_DECISION')).toMatchObject({ defaultValue: 'APPROVE', options: ['APPROVE', 'DECLINE'] })
+
+      const { resolveKountSettings } = await import('../../src/services/FraudReviewService.js')
+      expect(await resolveKountSettings(kv, env)).toMatchObject({ maxRetries: 3, fallbackDecision: 'APPROVE' })
+    })
+
+    it('saves valid values and uses them', async () => {
+      const res = await put({ KOUNT_MAX_RETRIES: '5', KOUNT_FALLBACK_DECISION: 'decline' })
+      expect(res.status).toBe(200)
+      const { resolveKountSettings } = await import('../../src/services/FraudReviewService.js')
+      expect(await resolveKountSettings(kv, env)).toMatchObject({ maxRetries: 5, fallbackDecision: 'DECLINE' })
+    })
+
+    it('rejects invalid values', async () => {
+      for (const body of [
+        { KOUNT_MAX_RETRIES: '-1' },
+        { KOUNT_MAX_RETRIES: '11' },
+        { KOUNT_MAX_RETRIES: '2.5' },
+        { KOUNT_MAX_RETRIES: 'many' },
+        { KOUNT_FALLBACK_DECISION: 'REVIEW' },
+      ]) {
+        expect((await put(body)).status).toBe(400)
+      }
+    })
+  })
+
   describe('admin password', () => {
     it('requires the current password', async () => {
       const req = createTestRequest('/api/admin/developer-settings/password', {

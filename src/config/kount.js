@@ -21,11 +21,18 @@ export const KOUNT_TOKEN_REFRESH_SKEW_MS = 60_000
 // Per-request timeout for Kount API calls.
 export const KOUNT_REQUEST_TIMEOUT_MS = 10_000
 
-// Bounded retries for requests Kount explicitly did not process (429/503,
-// token endpoint errors). Order writes are never retried after a timeout.
-export const KOUNT_MAX_ATTEMPTS = 3
+// Retries for errors reaching Kount (network errors, timeouts, 408, 429,
+// 5xx): exponential backoff with full jitter. The retry count is set in
+// Developer settings (KOUNT_MAX_RETRIES); other 4xx responses are not retried.
+export const KOUNT_DEFAULT_MAX_RETRIES = 3
+export const KOUNT_MAX_RETRIES_LIMIT = 10
 export const KOUNT_BACKOFF_BASE_MS = 250
 export const KOUNT_BACKOFF_MAX_MS = 2_000
+
+// Decision assumed when no Kount decision can be obtained after retries
+// (Developer settings: KOUNT_FALLBACK_DECISION).
+export const KOUNT_FALLBACK_DECISIONS = Object.freeze(['APPROVE', 'DECLINE'])
+export const KOUNT_DEFAULT_FALLBACK_DECISION = 'APPROVE'
 
 // Webhook timestamp freshness window (Kount guidance: 45 minutes, to allow
 // for retries).
@@ -49,14 +56,13 @@ export const KOUNT_DECLINE_KV_PREFIX = 'kount:decline:'
 export const DECLINE_REPORT_STATES = Object.freeze({
   SUBMITTING: 'submitting',
   SUBMITTED: 'submitted',
-  // Kount may have recorded it (timeout or 5xx); never resubmitted.
-  UNCERTAIN: 'uncertain',
-  // Kount rejected the payload (4xx); not retried.
-  REJECTED: 'rejected',
+  // Kount could not be reached after all retries, or rejected the payload.
+  // Logged and not retried.
+  FAILED: 'failed',
 })
 
-// An evaluation still marked in progress after this long is treated as an
-// uncertain outcome that needs reconciliation, never re-submitted blindly.
+// An evaluation still marked in progress after this long is treated as a
+// failure to get a decision: the fallback decision is applied.
 export const KOUNT_EVALUATION_STALE_MS = 5 * 60 * 1000
 
 // Fraud review record states.
@@ -71,8 +77,8 @@ export const FRAUD_STATES = Object.freeze({
   REVIEW_DECLINED_CANCELED: 'review_declined_canceled',
   REVIEW_DECLINED_REFUNDED: 'review_declined_refunded',
   REVIEW_DECLINED_REFUND_PENDING: 'review_declined_refund_pending',
-  // Kount could not give a decision (error, timeout, uncertain outcome).
-  // The authorization is held — this is never treated as an approval.
+  // Legacy: authorization held after a Kount failure. Failures now apply
+  // the configured fallback decision instead; kept for older records.
   EVALUATION_FAILED_HOLD: 'evaluation_failed_hold',
   // Kount decided but the Stripe capture/cancel/refund failed.
   PAYMENT_ACTION_FAILED: 'payment_action_failed',

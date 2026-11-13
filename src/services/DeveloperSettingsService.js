@@ -13,14 +13,23 @@
 //     wrangler kv key delete developer:settings --namespace-id <id> --remote
 //
 import { KV_KEYS } from '../config/index.js'
+import {
+  KOUNT_DEFAULT_MAX_RETRIES,
+  KOUNT_MAX_RETRIES_LIMIT,
+  KOUNT_FALLBACK_DECISIONS,
+  KOUNT_DEFAULT_FALLBACK_DECISION,
+} from '../config/kount.js'
 import { randomHex } from '../utils/crypto.js'
+import { ValidationError } from '../utils/errors.js'
 
 /**
  * Settings that may be written from the admin UI.
  *
  * `secret: true` means the value is never returned to the browser — the API
  * reports only whether one is set. `password: true` means it is stored as a
- * salted hash and compared, never read back.
+ * salted hash and compared, never read back. `options` restricts the value
+ * to a fixed list; `integer` to a whole number between `min` and `max`.
+ * `defaultValue` is what applies when the field is unset.
  */
 export const DEVELOPER_SETTING_FIELDS = [
   { key: 'STRIPE_SECRET_KEY', label: 'Stripe secret key', secret: true },
@@ -32,6 +41,24 @@ export const DEVELOPER_SETTING_FIELDS = [
   { key: 'KOUNT_CLIENT_ID', label: 'Kount client ID', secret: false },
   { key: 'KOUNT_API_KEY', label: 'Kount API key', secret: true },
   { key: 'KOUNT_WEBHOOK_PUBLIC_KEY', label: 'Kount webhook public key', secret: false },
+  {
+    key: 'KOUNT_MAX_RETRIES',
+    label: 'Kount max retries',
+    secret: false,
+    integer: true,
+    min: 0,
+    max: KOUNT_MAX_RETRIES_LIMIT,
+    defaultValue: String(KOUNT_DEFAULT_MAX_RETRIES),
+    help: 'Retries (exponential backoff with jitter) when Kount cannot be reached.',
+  },
+  {
+    key: 'KOUNT_FALLBACK_DECISION',
+    label: 'Kount fallback decision',
+    secret: false,
+    options: KOUNT_FALLBACK_DECISIONS,
+    defaultValue: KOUNT_DEFAULT_FALLBACK_DECISION,
+    help: 'Decision applied when Kount gives none after all retries.',
+  },
   { key: 'ADMIN_PASSWORD', label: 'Admin password', secret: true, password: true },
 ]
 
@@ -46,6 +73,26 @@ export async function hashPassword(password, salt = randomHex(16)) {
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('')
   return { salt, hash: hex }
+}
+
+/** Check a value against a field's constraints; returns the stored string. */
+function validateFieldValue(field, value) {
+  const text = String(value).trim()
+  if (field.options) {
+    const upper = text.toUpperCase()
+    if (!field.options.includes(upper)) {
+      throw new ValidationError(`${field.label} must be one of: ${field.options.join(', ')}`)
+    }
+    return upper
+  }
+  if (field.integer) {
+    const n = Number(text)
+    if (!Number.isInteger(n) || n < field.min || n > field.max) {
+      throw new ValidationError(`${field.label} must be a whole number from ${field.min} to ${field.max}`)
+    }
+    return String(n)
+  }
+  return String(value)
 }
 
 export class DeveloperSettingsService {
@@ -86,6 +133,10 @@ export class DeveloperSettingsService {
         source: inKv ? 'settings' : (inEnv ? 'environment' : 'unset'),
         // Non-secret values are safe to show so they can be edited in place.
         value: field.secret ? undefined : (stored[field.key] ?? env[field.key] ?? ''),
+        options: field.options ? [...field.options] : undefined,
+        integer: field.integer || undefined,
+        defaultValue: field.defaultValue,
+        help: field.help,
       }
     })
   }
@@ -103,7 +154,7 @@ export class DeveloperSettingsService {
       if (value === '' || value === null || value === undefined) {
         delete stored[key]
       } else {
-        stored[key] = String(value)
+        stored[key] = validateFieldValue(field, value)
       }
     }
 

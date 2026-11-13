@@ -40,7 +40,7 @@ A declined card never completes hosted Checkout: the buyer sees Stripe's error a
 | Radar block (`outcome.type: blocked`), never sent to the card network | `UNKNOWN` | `stripe_radar_blocklist` (other Radar reasons: `stripe_radar_{reason}`) | `UNKNOWN` | omitted |
 | Any other decline (issuer decline, invalid card) | `DECLINED` | network decline code, else Stripe's `decline_code`, else `failure_code` | from `cvc_check` | from the address checks |
 
-- One report per failed charge (`kount:decline:{chargeId}`). Redeliveries are no-ops; a concurrent delivery gets `409`. A timeout or 5xx is marked `uncertain` and never resubmitted; a `4xx` is marked `rejected`. If Kount certainly did not record it (token failure, retries exhausted on `429`/`503`), the webhook returns `503` so Stripe retries.
+- One report per failed charge (`kount:decline:{chargeId}`). Redeliveries are no-ops; a concurrent delivery gets `409`. Errors reaching Kount are retried (see [Failure handling](#failure-handling)). If the report still fails, or Kount rejects it, the report and its error are logged and saved as `failed`, and it is not sent again.
 
 ### What the buyer sees
 
@@ -69,16 +69,18 @@ After each payment action OpenShop sends a best-effort `PATCH /commerce/v2/order
 
 ### Failure handling
 
-- **Kount error, timeout, or a response with no decision.** The authorization is **held**, not captured (`evaluation_failed_hold`). A failure is never treated as an approval. Timeouts and HTTP 500 are recorded as *uncertain*: Kount may have accepted the order, so OpenShop never resubmits it automatically. Reconcile in the Kount portal, then capture or cancel in the Stripe Dashboard.
-- **Retries.** Token requests retry with bounded backoff. Order writes retry only on `401` (once, after refreshing the token), `429` or `503`, honoring `Retry-After`.
-- **Duplicate deliveries.** One KV record per Checkout Session (`kount:order:{sessionId}`) makes repeat Stripe/Kount deliveries no-ops once an order is final. A concurrent Stripe delivery gets `409`, so Stripe retries later. An in-progress record older than 5 minutes is moved to `evaluation_failed_hold` and is not resubmitted. Stripe capture, cancel, and refund calls use per-PaymentIntent idempotency keys.
+- **Retries.** Every Kount call (token, evaluate, data-only order, update) retries errors reaching Kount — network errors, timeouts, `408`, `429` and `5xx` — with exponential backoff and full jitter, using the [`exponential-backoff`](https://www.npmjs.com/package/exponential-backoff) library: waits are random between 0 and 250 ms × 2ⁿ, capped at 2 s. A `401` refreshes the token and retries. Other `4xx` responses are not retried. The number of retries is **Kount max retries** in Developer settings (`KOUNT_MAX_RETRIES`, default `3`, 0–10).
+- **Duplicates from retries.** Kount has no idempotency key. If an evaluation timed out or got a `5xx` after Kount had already recorded it, the retry can create a second Kount order for the same `merchantOrderId`. OpenShop acts on the decision from the call that succeeded.
+- **No decision after retries.** When retries run out, Kount rejects the request, the response has no decision, or an evaluation never finished, OpenShop logs the transaction and the error (`[FraudReview] No Kount decision; applying fallback decision`) and applies the **Kount fallback decision** from Developer settings (`KOUNT_FALLBACK_DECISION`: `APPROVE`, the default, or `DECLINE`). `APPROVE` captures the payment (`approved_captured`); `DECLINE` cancels the authorization (`declined_canceled`). The record keeps `decisionSource: "fallback"` and `evaluationError` (message, HTTP status, attempts, correlation ID). There is no Kount order to update afterwards.
+- **Timing.** Each attempt has a 10-second timeout, so a fully failing evaluation with 3 retries can take about 45 seconds, which may be longer than Stripe waits for a webhook response. If Stripe gives up, it redelivers later: a redelivery gets `409` while the first evaluation is still running, and an evaluation that never finished (for example, the Worker was stopped when Stripe disconnected) gets the fallback decision after 5 minutes. Keep `KOUNT_MAX_RETRIES` low if this matters.
+- **Duplicate deliveries.** One KV record per Checkout Session (`kount:order:{sessionId}`) makes repeat Stripe/Kount deliveries no-ops once an order is final. A concurrent Stripe delivery gets `409`, so Stripe retries later. An in-progress record older than 5 minutes gets the fallback decision and is not resubmitted. Stripe capture, cancel, and refund calls use per-PaymentIntent idempotency keys.
 - **Refunds.** A refund is recorded as complete only when Stripe reports `succeeded`. Otherwise the state is `review_declined_refund_pending` until Stripe sends `refund.updated` (or the older `charge.refund.updated`). Then the record moves to `review_declined_refunded` and Kount is told `REFUNDED`. OpenShop puts `checkout_session_id` in each refund's metadata, and a `kount:pi:{paymentIntentId}` index covers refunds without it. If a refund event arrives before OpenShop has saved the refund ID, the webhook returns `409` so Stripe retries.
 - **Failed refunds.** If creating the refund errors, the record moves to `payment_action_failed` and the Kount webhook returns `500`, so Kount redelivers and the refund is retried with the same idempotency key. If Stripe later reports the refund `failed` or `canceled`, the record moves to `payment_action_failed`, Kount is told `REFUND_FAILED`, and the next attempt uses a new idempotency key (`kount-refund-{pi}-{n}`), because Stripe replays the original response for a reused key. The order stays unfulfillable. Retry by redelivering the Kount decline or by refunding in the Stripe Dashboard.
 - **Fees.** Refunding a captured payment does not return Stripe's processing fee. That cost comes with capturing REVIEW orders up front.
 
 ### Record states
 
-`evaluating`, `approved_captured`, `declined_canceled`, `review_captured`, `review_approved`, `review_declined_canceled`, `review_declined_refunded`, `review_declined_refund_pending`, `evaluation_failed_hold`, `payment_action_failed`. Admins can list them at `GET /api/admin/fraud-reviews`.
+`evaluating`, `approved_captured`, `declined_canceled`, `review_captured`, `review_approved`, `review_declined_canceled`, `review_declined_refunded`, `review_declined_refund_pending`, `payment_action_failed`. Older records may also be `evaluation_failed_hold`, from before failures applied the fallback decision. Admins can list them at `GET /api/admin/fraud-reviews`.
 
 ## Device data collection
 
@@ -98,6 +100,8 @@ Set these as Worker secrets or vars, or in **Admin → Developer settings** (KV 
 | `KOUNT_CLIENT_ID` | no | Kount client/merchant ID (the device SDK uses it too) |
 | `KOUNT_API_KEY` | yes | Portal Sandbox API key, sent as `Authorization: Basic <key>` to the token endpoint |
 | `KOUNT_WEBHOOK_PUBLIC_KEY` | no | Portal webhook public key (PEM or base64 SPKI) |
+| `KOUNT_MAX_RETRIES` | no | Retries for errors reaching Kount, 0–10 (default `3`) |
+| `KOUNT_FALLBACK_DECISION` | no | `APPROVE` (default) or `DECLINE`, applied when Kount gives no decision after retries |
 | `STRIPE_WEBHOOK_SECRET` | yes | Signing secret for `/api/stripe-webhook` |
 
 Set up webhooks:

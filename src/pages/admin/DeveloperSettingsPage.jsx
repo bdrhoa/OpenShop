@@ -147,25 +147,38 @@ export function DeveloperSettingsPage() {
             >
               {field.label}
             </label>
-            {useSelect ? renderModelSelect(field, modelKeys) : (
+            {field.options ? (
+              <select
+                id={`ds-${field.key}`}
+                value={drafts[field.key] ?? field.value ?? ''}
+                onChange={(e) => setDrafts({ ...drafts, [field.key]: e.target.value })}
+                className="admin-select mt-1 w-full"
+              >
+                <option value="">Default ({field.defaultValue})</option>
+                {field.options.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            ) : useSelect ? renderModelSelect(field, modelKeys) : (
             <Input
               id={`ds-${field.key}`}
-              type={field.secret ? 'password' : 'text'}
+              type={field.secret ? 'password' : (field.integer ? 'number' : 'text')}
               autoComplete="off"
               value={drafts[field.key] ?? (field.secret ? '' : field.value ?? '')}
               placeholder={
                 field.secret
                   ? (field.configured ? '•••••••• (set — type to replace)' : 'Not set')
-                  : 'Not set'
+                  : (field.defaultValue ? `Default: ${field.defaultValue}` : 'Not set')
               }
               onChange={(e) => setDrafts({ ...drafts, [field.key]: e.target.value })}
               className="mt-1"
             />
             )}
             <p className="mt-1 text-xs text-[var(--admin-text-muted)]">
+              {field.help && `${field.help} `}
               {field.source === 'settings' && 'Set here.'}
               {field.source === 'environment' && 'Currently from the Worker environment.'}
-              {field.source === 'unset' && 'Not configured.'}
+              {field.source === 'unset' && (field.defaultValue ? `Using the default (${field.defaultValue}).` : 'Not configured.')}
             </p>
           </div>
           )

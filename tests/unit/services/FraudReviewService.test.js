@@ -25,7 +25,7 @@ function heldSession({ status = 'requires_capture', hold = '1' } = {}) {
   }
 }
 
-function makeDeps({ decision = 'APPROVE', evaluateError } = {}) {
+function makeDeps({ decision = 'APPROVE', evaluateError, fallbackDecision } = {}) {
   const stripe = {
     getCheckoutSessionForReview: vi.fn(async () => heldSession()),
     capturePaymentIntent: vi.fn(async (id) => ({ id, status: 'succeeded' })),
@@ -41,7 +41,7 @@ function makeDeps({ decision = 'APPROVE', evaluateError } = {}) {
     updateOrder: vi.fn(async () => ({})),
   }
   const kv = createMockKV()
-  return { stripe, kount, kv, service: new FraudReviewService({ kv, stripe, kount }) }
+  return { stripe, kount, kv, service: new FraudReviewService({ kv, stripe, kount, fallbackDecision }) }
 }
 
 describe('FraudReviewService.handleCheckoutCompleted', () => {
@@ -76,12 +76,43 @@ describe('FraudReviewService.handleCheckoutCompleted', () => {
     await expect(deps.service.getFulfillmentStatus('cs_test_1')).resolves.toEqual({ fulfillable: false, state: FRAUD_STATES.REVIEW_CAPTURED })
   })
 
-  it('holds (never captures) when Kount fails', async () => {
-    deps = makeDeps({ evaluateError: new KountError('boom', { status: 500, uncertain: true }) })
+  function exhaustedError() {
+    return Object.assign(new KountError('Kount POST returned 503', { status: 503, retryable: true, correlationId: 'corr-9' }), { attempts: 4, exhausted: true })
+  }
+
+  it('applies the default fallback decision (APPROVE) and logs when Kount cannot be reached', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    deps = makeDeps({ evaluateError: exhaustedError() })
     const result = await deps.service.handleCheckoutCompleted('cs_test_1')
-    expect(result.record.state).toBe(FRAUD_STATES.EVALUATION_FAILED_HOLD)
-    expect(result.record.error).toMatch(/Reconcile/)
+    expect(result.record).toMatchObject({
+      state: FRAUD_STATES.APPROVED_CAPTURED,
+      decision: 'APPROVE',
+      decisionSource: 'fallback',
+      evaluationError: { status: 503, attempts: 4, exhausted: true, correlationId: 'corr-9' },
+    })
+    expect(deps.stripe.capturePaymentIntent).toHaveBeenCalledWith('pi_test_1')
+    expect(deps.kount.updateOrder).not.toHaveBeenCalled()
+    const logged = log.mock.calls.find(([msg]) => String(msg).includes('fallback'))
+    expect(JSON.parse(logged[1])).toMatchObject({ checkoutSessionId: 'cs_test_1', paymentIntentId: 'pi_test_1', fallbackDecision: 'APPROVE' })
+    log.mockRestore()
+  })
+
+  it('cancels the authorization when the fallback decision is DECLINE', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    deps = makeDeps({ evaluateError: exhaustedError(), fallbackDecision: 'DECLINE' })
+    const result = await deps.service.handleCheckoutCompleted('cs_test_1')
+    expect(result.record).toMatchObject({ state: FRAUD_STATES.DECLINED_CANCELED, decision: 'DECLINE', decisionSource: 'fallback' })
+    expect(deps.stripe.cancelPaymentIntent).toHaveBeenCalled()
     expect(deps.stripe.capturePaymentIntent).not.toHaveBeenCalled()
+    vi.restoreAllMocks()
+  })
+
+  it('applies the fallback decision when Kount returns no decision', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    deps = makeDeps({ decision: null })
+    const result = await deps.service.handleCheckoutCompleted('cs_test_1')
+    expect(result.record).toMatchObject({ state: FRAUD_STATES.APPROVED_CAPTURED, decisionSource: 'fallback' })
+    vi.restoreAllMocks()
   })
 
   it('treats duplicate deliveries as no-ops', async () => {
@@ -92,15 +123,17 @@ describe('FraudReviewService.handleCheckoutCompleted', () => {
     expect(deps.stripe.capturePaymentIntent).toHaveBeenCalledTimes(1)
   })
 
-  it('reports in-progress for a concurrent delivery and does not re-submit a stale one', async () => {
+  it('reports in-progress for a concurrent delivery and applies the fallback to a stale one', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
     const record = { checkoutSessionId: 'cs_test_1', paymentIntentId: 'pi_test_1', state: FRAUD_STATES.EVALUATING, updatedAt: new Date().toISOString() }
     await deps.kv.put(`${KOUNT_KV_PREFIX}cs_test_1`, JSON.stringify(record))
     expect((await deps.service.handleCheckoutCompleted('cs_test_1')).status).toBe('in_progress')
 
     await deps.kv.put(`${KOUNT_KV_PREFIX}cs_test_1`, JSON.stringify({ ...record, updatedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString() }))
     const stale = await deps.service.handleCheckoutCompleted('cs_test_1')
-    expect(stale.record.state).toBe(FRAUD_STATES.EVALUATION_FAILED_HOLD)
+    expect(stale.record).toMatchObject({ state: FRAUD_STATES.APPROVED_CAPTURED, decisionSource: 'fallback' })
     expect(deps.kount.evaluateOrder).not.toHaveBeenCalled()
+    vi.restoreAllMocks()
   })
 
   it('ignores sessions that were not held for review', async () => {
@@ -350,21 +383,23 @@ describe('FraudReviewService.handlePaymentFailed', () => {
     expect(kount.submitOrder).not.toHaveBeenCalled()
   })
 
-  it('never resubmits after an uncertain outcome', async () => {
-    const { service, kount } = makeDeclineDeps({ submitError: new KountError('timeout', { uncertain: true }) })
-    expect((await service.handlePaymentFailed(failedPi())).report.state).toBe('uncertain')
+  it('logs and records a report that failed after retries, and does not resend it', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const submitError = Object.assign(new KountError('timed out', { uncertain: true, retryable: true }), { attempts: 4, exhausted: true })
+    const { service, kount } = makeDeclineDeps({ submitError })
+    const result = await service.handlePaymentFailed(failedPi())
+    expect(result.status).toBe('done')
+    expect(result.report).toMatchObject({ state: 'failed', chargeId: 'ch_failed', error: { attempts: 4, exhausted: true } })
+    expect(log.mock.calls.some(([msg]) => String(msg).includes('decline report failed'))).toBe(true)
     await service.handlePaymentFailed(failedPi())
     expect(kount.submitOrder).toHaveBeenCalledTimes(1)
+    log.mockRestore()
   })
 
-  it('asks for a retry when Kount certainly did not record it', async () => {
-    const { service, kv } = makeDeclineDeps({ submitError: new KountError('exhausted', { status: 503 }) })
-    expect((await service.handlePaymentFailed(failedPi())).status).toBe('retry')
-    expect(await kv.get(`${KOUNT_DECLINE_KV_PREFIX}ch_failed`)).toBeNull()
-  })
-
-  it('does not retry a payload Kount rejected', async () => {
+  it('records a payload Kount rejected as failed', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
     const { service } = makeDeclineDeps({ submitError: new KountError('bad request', { status: 400 }) })
-    expect((await service.handlePaymentFailed(failedPi())).report.state).toBe('rejected')
+    expect((await service.handlePaymentFailed(failedPi())).report).toMatchObject({ state: 'failed', error: { status: 400 } })
+    vi.restoreAllMocks()
   })
 })
