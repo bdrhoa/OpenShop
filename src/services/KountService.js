@@ -4,9 +4,12 @@
 //   expiry, with concurrent refreshes coalesced into one request.
 // - POST /commerce/v2/orders (riskInquiry=true for evaluation, false for
 //   data-only) and PATCH /commerce/v2/orders/{orderId} for status updates.
-// - Failures carry a phase so callers never treat an uncertain write as
-//   "not sent". Transient failures that Kount cannot have acted on are retried
-//   with bounded backoff; uncertain ones are surfaced, not retried.
+// - Transient failures (network errors, timeouts, 401/408/429/5xx) are retried
+//   up to KOUNT_MAX_RETRIES times (0-3) with exponential backoff and full
+//   jitter, honoring Retry-After. Other 4xx responses are not retried.
+// - Kount has no lookup by merchantOrderId, so a POST that timed out cannot be
+//   reconciled before it is retried; such a retry may create a duplicate Kount
+//   order. Errors keep their phase (`uncertain`) so this stays visible.
 import {
   KOUNT_SANDBOX_TOKEN_URL,
   KOUNT_SANDBOX_API_URL,
@@ -14,8 +17,12 @@ import {
   KOUNT_DDC_ENVIRONMENT_DEFAULT,
   KOUNT_TOKEN_REFRESH_MARGIN_MS,
   KOUNT_REQUEST_TIMEOUT_MS,
-  KOUNT_MAX_ATTEMPTS,
-  KOUNT_BACKOFF_MS,
+  KOUNT_MAX_RETRIES_LIMIT,
+  KOUNT_MAX_RETRIES_DEFAULT,
+  KOUNT_BACKOFF_BASE_MS,
+  KOUNT_BACKOFF_CAP_MS,
+  KOUNT_FALLBACK_DECISIONS,
+  KOUNT_FALLBACK_DECISION_DEFAULT,
 } from '../config/kount.js'
 import { resolveSetting } from './DeveloperSettingsService.js'
 
@@ -27,8 +34,23 @@ export const KOUNT_SETTING_KEYS = [
   'KOUNT_TOKEN_URL',
   'KOUNT_API_URL',
   'KOUNT_DDC_ENVIRONMENT',
+  'KOUNT_MAX_RETRIES',
+  'KOUNT_FALLBACK_DECISION',
   'STRIPE_WEBHOOK_SECRET',
 ]
+
+/** KOUNT_MAX_RETRIES: integer 0-3; anything else falls back to the default. */
+export function parseMaxRetries(value) {
+  const text = String(value ?? '').trim()
+  if (!/^\d+$/.test(text)) return KOUNT_MAX_RETRIES_DEFAULT
+  return Math.min(Number(text), KOUNT_MAX_RETRIES_LIMIT)
+}
+
+/** KOUNT_FALLBACK_DECISION: APPROVE or DECLINE; anything else is the default. */
+export function parseFallbackDecision(value) {
+  const decision = String(value ?? '').trim().toUpperCase()
+  return KOUNT_FALLBACK_DECISIONS.includes(decision) ? decision : KOUNT_FALLBACK_DECISION_DEFAULT
+}
 
 /**
  * Resolve all Kount-related settings (KV first, then env).
@@ -47,6 +69,8 @@ export async function resolveKountConfig(kv, env) {
     tokenUrl: cfg.KOUNT_TOKEN_URL || KOUNT_SANDBOX_TOKEN_URL,
     apiUrl: (cfg.KOUNT_API_URL || KOUNT_SANDBOX_API_URL).replace(/\/+$/, ''),
     ddcEnvironment: (cfg.KOUNT_DDC_ENVIRONMENT || KOUNT_DDC_ENVIRONMENT_DEFAULT).toUpperCase(),
+    maxRetries: parseMaxRetries(cfg.KOUNT_MAX_RETRIES),
+    fallbackDecision: parseFallbackDecision(cfg.KOUNT_FALLBACK_DECISION),
     stripeWebhookSecret: cfg.STRIPE_WEBHOOK_SECRET || undefined,
   }
 }
@@ -63,7 +87,7 @@ export function isKountEnabled(cfg) {
 export class KountApiError extends Error {
   /**
    * @param {string} message
-   * @param {{ status?: number, phase: 'before_send'|'awaiting_response'|'response_received', retryable: boolean, correlationId?: string, operation: string }} info
+   * @param {{ status?: number, phase: 'before_send'|'awaiting_response'|'response_received', retryable: boolean, retryAfterMs?: number, correlationId?: string, operation: string }} info
    */
   constructor(message, info) {
     super(message)
@@ -89,10 +113,37 @@ export function clearKountTokenCache() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/** Transient HTTP statuses worth retrying. */
+function isRetryableStatus(status) {
+  return status === 401 || status === 408 || status === 429 || status >= 500
+}
+
+/** Retry-After as milliseconds (delta-seconds or HTTP date), or undefined. */
+export function parseRetryAfter(value, now = Date.now()) {
+  if (!value) return undefined
+  const text = String(value).trim()
+  if (/^\d+(\.\d+)?$/.test(text)) return Number(text) * 1000
+  const at = Date.parse(text)
+  return Number.isNaN(at) ? undefined : Math.max(0, at - now)
+}
+
+/**
+ * Wait before retry `attempt` (0-based): full jitter over an exponentially
+ * growing, capped window. Returns null when Retry-After asks for longer than
+ * the cap, meaning "stop retrying".
+ */
+export function backoffDelay(attempt, { random = Math.random, retryAfterMs } = {}) {
+  const window = Math.min(KOUNT_BACKOFF_CAP_MS, KOUNT_BACKOFF_BASE_MS * 2 ** attempt)
+  const jittered = Math.floor(random() * window)
+  if (retryAfterMs === undefined) return jittered
+  if (retryAfterMs > KOUNT_BACKOFF_CAP_MS) return null
+  return Math.max(jittered, Math.ceil(retryAfterMs))
+}
+
 export class KountService {
   /**
-   * @param {{ apiKey: string, tokenUrl: string, apiUrl: string }} cfg
-   * @param {{ fetch?: typeof fetch, now?: () => number, sleep?: (ms:number)=>Promise<void> }} [deps]
+   * @param {{ apiKey: string, tokenUrl: string, apiUrl: string, maxRetries?: number }} cfg
+   * @param {{ fetch?: typeof fetch, now?: () => number, sleep?: (ms:number)=>Promise<void>, random?: () => number }} [deps]
    */
   constructor(cfg, deps = {}) {
     if (!cfg?.apiKey) throw new Error('KountService requires KOUNT_API_KEY')
@@ -100,6 +151,8 @@ export class KountService {
     this.fetch = deps.fetch || ((...args) => fetch(...args))
     this.now = deps.now || (() => Date.now())
     this.sleep = deps.sleep || sleep
+    this.random = deps.random || Math.random
+    this.maxRetries = parseMaxRetries(cfg.maxRetries)
     this.cacheKey = `${cfg.tokenUrl}|${cfg.apiKey}`
   }
 
@@ -147,7 +200,8 @@ export class KountService {
         operation: 'token',
         status: res.status,
         phase: 'before_send',
-        retryable: res.status === 429 || res.status >= 500,
+        retryable: res.status === 408 || res.status === 429 || res.status >= 500,
+        retryAfterMs: parseRetryAfter(res.headers?.get?.('retry-after'), this.now()),
       })
     }
     const body = await res.json().catch(() => ({}))
@@ -173,7 +227,7 @@ export class KountService {
       })
     } catch (err) {
       throw new KountApiError(`Kount ${operation} got no response: ${err?.name || 'network error'}`, {
-        operation, phase: 'awaiting_response', retryable: false,
+        operation, phase: 'awaiting_response', retryable: true,
       })
     }
     const correlationId = res.headers?.get?.('x-correlation-id') || undefined
@@ -187,27 +241,27 @@ export class KountService {
       status: res.status,
       phase: 'response_received',
       correlationId,
-      retryable: res.status === 401 || res.status === 429 || res.status === 503,
+      retryable: isRetryableStatus(res.status),
+      retryAfterMs: parseRetryAfter(res.headers?.get?.('retry-after'), this.now()),
     })
   }
 
   /**
-   * Retry wrapper. `idempotent` writes (PATCH status) may also be retried after
-   * uncertain failures; a POST may not, since it would create a second order.
+   * Run `fn`, retrying transient Kount failures up to `maxRetries` times with
+   * exponential backoff and jitter. The final error carries `attempts`.
    */
-  async withRetry(fn, { idempotent }) {
-    let lastErr
-    for (let attempt = 0; attempt < KOUNT_MAX_ATTEMPTS; attempt++) {
+  async withRetry(fn) {
+    for (let attempt = 0; ; attempt++) {
       try {
         return await fn()
       } catch (err) {
-        lastErr = err
-        const canRetry = err instanceof KountApiError && (err.retryable || (idempotent && err.uncertain))
-        if (!canRetry || attempt === KOUNT_MAX_ATTEMPTS - 1) throw err
-        await this.sleep(KOUNT_BACKOFF_MS[Math.min(attempt, KOUNT_BACKOFF_MS.length - 1)])
+        if (err && typeof err === 'object') err.attempts = attempt + 1
+        if (!(err instanceof KountApiError) || !err.retryable || attempt >= this.maxRetries) throw err
+        const delay = backoffDelay(attempt, { random: this.random, retryAfterMs: err.retryAfterMs })
+        if (delay === null) throw err
+        await this.sleep(delay)
       }
     }
-    throw lastErr
   }
 
   /** POST an order. riskInquiry=true returns a decision; false is data-only. */
@@ -216,7 +270,6 @@ export class KountService {
     const operation = riskInquiry ? 'evaluate_order' : 'data_only_order'
     const { data, correlationId } = await this.withRetry(
       () => this.send(operation, 'POST', path, order),
-      { idempotent: false },
     )
     return parseOrderResponse(data, correlationId)
   }
@@ -226,7 +279,6 @@ export class KountService {
     const path = `/commerce/v2/orders/${encodeURIComponent(orderId)}`
     const { data, correlationId } = await this.withRetry(
       () => this.send('update_order', 'PATCH', path, patch),
-      { idempotent: true },
     )
     return { data, correlationId }
   }
@@ -234,15 +286,17 @@ export class KountService {
 
 const DECISIONS = new Set(['APPROVE', 'DECLINE', 'REVIEW'])
 
-/** Extract the fields OpenShop stores; unknown decisions stay null (never approval). */
+/** Extract the fields OpenShop stores; an unknown decision is null (the caller applies its fallback). */
 export function parseOrderResponse(data, correlationId) {
   const order = data?.order || {}
-  const raw = order.riskInquiry?.decision
+  // The schema declares an object; the integration guide shows an array.
+  const inquiry = (Array.isArray(order.riskInquiry) ? order.riskInquiry[0] : order.riskInquiry) || {}
+  const raw = inquiry.decision
   return {
     orderId: order.orderId || null,
     decision: DECISIONS.has(raw) ? raw : null,
-    omniscore: typeof order.riskInquiry?.omniscore === 'number' ? order.riskInquiry.omniscore : null,
-    deviceId: order.riskInquiry?.device?.id || null,
+    omniscore: typeof inquiry.omniscore === 'number' ? inquiry.omniscore : null,
+    deviceId: inquiry.device?.id || null,
     transactionId: order.transactions?.[0]?.transactionId || null,
     correlationId: correlationId || null,
   }

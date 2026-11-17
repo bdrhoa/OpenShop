@@ -25,7 +25,7 @@ These endpoints handle payment processing and checkout flows.
 | `/api/create-checkout-session` | `POST` | Single item checkout (optional `kountSessionId`) | None |
 | `/api/create-cart-checkout-session` | `POST` | Multi-item cart checkout (optional `kountSessionId`) | None |
 | `/api/checkout-session/:id` | `GET` | Checkout summary incl. buyer-facing `orderStatus` (`processing`/`confirmed`/`received`/`declined`) | None |
-| `/api/kount/config` | `GET` | Whether Kount screening is on + DDC client ID/environment | None |
+| `/api/kount/config` | `GET` | Whether screening (`enabled`) and device data collection (`ddcEnabled`) are on, plus the DDC client ID/environment | None |
 | `/api/stripe-webhook` | `POST` | Stripe webhook (signature verified with `STRIPE_WEBHOOK_SECRET`) | Stripe signature |
 | `/api/kount-webhook` | `POST` | Kount reviewer webhook (RSA-PSS signature) | Kount signature |
 | `/api/admin/kount/orders` | `GET` | List Kount-screened orders (`?status=review`) | Admin |

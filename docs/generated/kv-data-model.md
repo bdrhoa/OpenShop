@@ -95,7 +95,7 @@ Only known root props are kept; unknown keys are dropped during sanitization (`v
 
 | Key | Shape |
 |-----|-------|
-| `kount:order:<checkout session id>` | `{ checkoutSessionId, paymentIntentId, status, decision, decisionSource, reason, kountOrderId, kountTransactionId, omniscore, deviceId, deviceSessionId, correlationId, payment, fulfillmentAllowed, kountStatusReported, pendingKountStatus, error, lockedAt, createdAt, updatedAt }`. See [KOUNT.md](../KOUNT.md). |
+| `kount:order:<checkout session id>` | `{ checkoutSessionId, paymentIntentId, status, decision, decisionSource, fallbackReason, reason, kountOrderId, kountTransactionId, omniscore, deviceId, deviceSessionId, correlationId, payment, fulfillmentAllowed, kountStatusReported, pendingKountStatus, error, lockedAt, createdAt, updatedAt }`. See [KOUNT.md](../KOUNT.md). |
 | `kount:order:attempt:<charge id>` | `{ kountOrderId \| error, at }`: dedupe marker for data-only failed-attempt orders |
 
 ## Settings and auth

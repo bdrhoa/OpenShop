@@ -64,13 +64,17 @@ describe('Kount integration routes', () => {
   })
 
   describe('GET /api/kount/config', () => {
-    it('exposes the client ID only when screening is fully configured', async () => {
+    it('enables device data collection whenever a client ID is set', async () => {
       let res = await executeRequest(app, createTestRequest('/api/kount/config'), env)
-      expect(await parseJsonResponse(res)).toEqual({ enabled: true, clientId: '900900', environment: 'TEST' })
+      expect(await parseJsonResponse(res)).toEqual({ enabled: true, ddcEnabled: true, clientId: '900900', environment: 'TEST' })
 
       delete env.STRIPE_WEBHOOK_SECRET
       res = await executeRequest(app, createTestRequest('/api/kount/config'), env)
-      expect(await parseJsonResponse(res)).toEqual({ enabled: false, clientId: null, environment: null })
+      expect(await parseJsonResponse(res)).toEqual({ enabled: false, ddcEnabled: true, clientId: '900900', environment: 'TEST' })
+
+      delete env.KOUNT_CLIENT_ID
+      res = await executeRequest(app, createTestRequest('/api/kount/config'), env)
+      expect(await parseJsonResponse(res)).toEqual({ enabled: false, ddcEnabled: false, clientId: null, environment: null })
     })
   })
 
@@ -161,15 +165,38 @@ describe('Kount integration routes', () => {
       expect(body.kountHold).toBeUndefined()
     })
 
-    it('returns 503 so Stripe redelivers when Kount is temporarily unavailable', async () => {
-      const pi = { id: 'pi_1', status: 'requires_capture', latest_charge: { id: 'ch_1' } }
-      stripeClient.checkout.sessions.retrieve.mockResolvedValue({ id: SESSION_ID, metadata: { kount_hold: 'true' }, line_items: { data: [] }, payment_intent: pi })
-      fetchSpy.mockResolvedValue(new Response('', { status: 503 }))
+    describe('when Kount stays unavailable', () => {
+      let pi
+      beforeEach(() => {
+        pi = { id: 'pi_1', status: 'requires_capture', latest_charge: { id: 'ch_1' } }
+        stripeClient.checkout.sessions.retrieve.mockResolvedValue({ id: SESSION_ID, metadata: { kount_hold: 'true' }, line_items: { data: [] }, payment_intent: pi })
+        stripeClient.paymentIntents.retrieve.mockResolvedValue(pi)
+        stripeClient.paymentIntents.capture.mockImplementation(async () => { pi.status = 'succeeded'; return pi })
+        stripeClient.paymentIntents.cancel.mockImplementation(async () => { pi.status = 'canceled'; return pi })
+        fetchSpy.mockImplementation(async () => new Response('', { status: 503 }))
+        env.KOUNT_MAX_RETRIES = '1'
+      })
 
-      const req = await stripeWebhookRequest({ id: 'evt_4', type: 'checkout.session.completed', data: { object: { id: SESSION_ID, metadata: { kount_hold: 'true' } } } })
-      const res = await executeRequest(app, req, env)
-      expect(res.status).toBe(503)
-      expect(stripeClient.paymentIntents.capture).not.toHaveBeenCalled()
+      async function deliver() {
+        const req = await stripeWebhookRequest({ id: 'evt_4', type: 'checkout.session.completed', data: { object: { id: SESSION_ID, metadata: { kount_hold: 'true' } } } })
+        return executeRequest(app, req, env)
+      }
+
+      it('retries the configured number of times, then applies the APPROVE fallback', async () => {
+        const res = await deliver()
+        expect(res.status).toBe(200)
+        expect(await parseJsonResponse(res)).toMatchObject({ handled: true, status: 'approved' })
+        expect(fetchSpy).toHaveBeenCalledTimes(2) // first attempt + 1 retry
+        expect(stripeClient.paymentIntents.capture).toHaveBeenCalledTimes(1)
+      })
+
+      it('applies a DECLINE fallback when configured', async () => {
+        env.KOUNT_FALLBACK_DECISION = 'DECLINE'
+        const res = await deliver()
+        expect(await parseJsonResponse(res)).toMatchObject({ handled: true, status: 'declined' })
+        expect(stripeClient.paymentIntents.cancel).toHaveBeenCalledTimes(1)
+        expect(stripeClient.paymentIntents.capture).not.toHaveBeenCalled()
+      })
     })
   })
 

@@ -20,6 +20,8 @@ STRIPE_WEBHOOK_SECRET=whsec_your_webhook_signing_secret
 KOUNT_CLIENT_ID=your_kount_client_id
 KOUNT_API_KEY=your_kount_portal_api_key
 KOUNT_WEBHOOK_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----..."
+KOUNT_MAX_RETRIES=2              # 0-3 retries per Kount request (exponential backoff with jitter)
+KOUNT_FALLBACK_DECISION=APPROVE  # APPROVE or DECLINE when the risk inquiry fails after all retries
 
 # Admin Configuration
 ADMIN_PASSWORD=your_secure_admin_password

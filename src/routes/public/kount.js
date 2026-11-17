@@ -15,11 +15,14 @@ const router = new Hono()
 // the API key never leaves the Worker.
 router.get('/kount/config', asyncHandler(async (c) => {
   const cfg = await resolveKountConfig(getKVNamespace(c.env), c.env)
-  const enabled = isKountEnabled(cfg)
+  // Device data collection only needs the (public) client ID. It runs even
+  // before screening is fully configured, so collection can be checked first.
+  const ddcEnabled = Boolean(cfg.clientId)
   return c.json({
-    enabled,
-    clientId: enabled ? cfg.clientId : null,
-    environment: enabled ? cfg.ddcEnvironment : null,
+    enabled: isKountEnabled(cfg),
+    ddcEnabled,
+    clientId: ddcEnabled ? cfg.clientId : null,
+    environment: ddcEnabled ? cfg.ddcEnvironment : null,
   })
 }))
 

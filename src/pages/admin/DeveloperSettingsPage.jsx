@@ -49,7 +49,8 @@ export function DeveloperSettingsPage() {
         method: 'PUT',
         body: JSON.stringify(drafts),
       })
-      const body = await res.json()
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`)
       setFields(body.fields)
       setDrafts({})
       setStatus({ ok: 'Saved. Changes take effect immediately.' })
@@ -124,6 +125,20 @@ export function DeveloperSettingsPage() {
     )
   }
 
+  const renderOptionSelect = (field) => (
+    <select
+      id={`ds-${field.key}`}
+      value={drafts[field.key] ?? field.value ?? ''}
+      onChange={(e) => setDrafts({ ...drafts, [field.key]: e.target.value })}
+      className="admin-select mt-1 w-full"
+    >
+      <option value="">Not set (default: {field.defaultValue})</option>
+      {field.options.map((option) => (
+        <option key={option} value={option}>{option}</option>
+      ))}
+    </select>
+  )
+
   return (
     <section className="admin-section max-w-2xl space-y-5">
       <AdminPageHeader
@@ -147,7 +162,7 @@ export function DeveloperSettingsPage() {
             >
               {field.label}
             </label>
-            {useSelect ? renderModelSelect(field, modelKeys) : (
+            {field.options ? renderOptionSelect(field) : useSelect ? renderModelSelect(field, modelKeys) : (
             <Input
               id={`ds-${field.key}`}
               type={field.secret ? 'password' : 'text'}

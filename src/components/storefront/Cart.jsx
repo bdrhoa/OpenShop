@@ -30,7 +30,7 @@ export function Cart() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(withKountSession({ items: checkoutItems })),
+        body: JSON.stringify(await withKountSession({ items: checkoutItems })),
       })
 
       const session = await response.json().catch(() => ({}))

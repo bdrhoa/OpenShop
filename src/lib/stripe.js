@@ -16,7 +16,7 @@ export async function redirectToCheckout(priceId) {
   const response = await fetch('/api/create-checkout-session', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(withKountSession({ priceId })),
+    body: JSON.stringify(await withKountSession({ priceId })),
   })
   const session = await response.json().catch(() => ({}))
   if (!response.ok || session.error) {

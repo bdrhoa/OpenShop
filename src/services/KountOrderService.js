@@ -11,10 +11,10 @@
 //     REVIEW   -> keep the authorization held     -> fulfillment blocked
 //   reviewer decision (Kount webhook or admin API) -> capture / cancel as above
 //
-// Kount failures are never treated as approvals. A definite, transient failure
-// is retried (Stripe redelivers the webhook); an uncertain one (Kount may have
-// created the order) is parked in `error` for a human, so a retry cannot create
-// a duplicate Kount order.
+// If the risk inquiry cannot produce a decision (Kount unreachable after all
+// retries, a rejected request, or a response without a decision), the
+// configured fallback decision (KOUNT_FALLBACK_DECISION, APPROVE or DECLINE) is
+// applied with decisionSource 'fallback' and the cause in fallbackReason.
 //
 // State lives in KV under kount:order:<checkout session id>. Every step is
 // resumable: a crash between "decided" and "captured" is completed by the next
@@ -24,7 +24,7 @@ import {
   KOUNT_EVALUATION_LOCK_MS,
   KOUNT_METADATA,
 } from '../config/kount.js'
-import { KountApiError, KountService, resolveKountConfig, isKountEnabled } from './KountService.js'
+import { KountApiError, KountService, resolveKountConfig, isKountEnabled, parseFallbackDecision } from './KountService.js'
 import { StripeService } from './StripeService.js'
 import { resolveSetting } from './DeveloperSettingsService.js'
 import { buildEvaluationOrder, buildFailedAttemptOrder, buildStatusUpdate } from './kountPayload.js'
@@ -32,7 +32,6 @@ import { APIError, ValidationError, NotFoundError } from '../utils/errors.js'
 
 export const KOUNT_ORDER_STATUS = {
   EVALUATING: 'evaluating',
-  EVALUATION_PENDING: 'evaluation_pending', // transient Kount failure, will retry
   DECIDING: 'deciding', // decision known, payment action not yet confirmed
   APPROVED: 'approved',
   DECLINED: 'declined',
@@ -72,6 +71,7 @@ function errorSummary(err) {
       operation: err.operation,
       status: err.status ?? null,
       phase: err.phase,
+      attempts: err.attempts ?? 1,
       correlationId: err.correlationId ?? null,
     }
   }
@@ -80,13 +80,14 @@ function errorSummary(err) {
 
 export class KountOrderService {
   /**
-   * @param {{ kv: any, stripe: any, kount: import('./KountService.js').KountService, channel?: string, now?: () => number }} deps
+   * @param {{ kv: any, stripe: any, kount: import('./KountService.js').KountService, channel?: string, fallbackDecision?: 'APPROVE'|'DECLINE', now?: () => number }} deps
    */
-  constructor({ kv, stripe, kount, channel, now }) {
+  constructor({ kv, stripe, kount, channel, fallbackDecision, now }) {
     this.kv = kv
     this.stripe = stripe
     this.kount = kount
     this.channel = channel
+    this.fallbackDecision = parseFallbackDecision(fallbackDecision)
     this.now = now || (() => Date.now())
   }
 
@@ -122,21 +123,14 @@ export class KountOrderService {
     let record = await this.get(id)
 
     if (record) {
-      if (record.status === KOUNT_ORDER_STATUS.EVALUATING) {
-        const age = this.now() - Date.parse(record.lockedAt || 0)
-        if (age < KOUNT_EVALUATION_LOCK_MS) {
-          throw new RetryLaterError('Kount evaluation already in progress')
-        }
-        // A previous attempt died mid-request. Kount may have created the
-        // order, so re-posting could duplicate it. Park for a human.
-        record.status = KOUNT_ORDER_STATUS.ERROR
-        record.reason = 'kount_outcome_unknown'
-        await this.save(record)
-        return { record }
-      }
-      if (record.status !== KOUNT_ORDER_STATUS.EVALUATION_PENDING) {
+      if (record.status !== KOUNT_ORDER_STATUS.EVALUATING) {
         return { record: await this.resume(record) }
       }
+      const age = this.now() - Date.parse(record.lockedAt || 0)
+      if (age < KOUNT_EVALUATION_LOCK_MS) {
+        throw new RetryLaterError('Kount evaluation already in progress')
+      }
+      // A previous attempt died mid-evaluation: evaluate again.
     }
 
     record = {
@@ -145,6 +139,7 @@ export class KountOrderService {
       status: KOUNT_ORDER_STATUS.EVALUATING,
       decision: null,
       decisionSource: null,
+      fallbackReason: null,
       reason: null,
       kountOrderId: null,
       kountTransactionId: null,
@@ -184,16 +179,10 @@ export class KountOrderService {
     try {
       result = await this.kount.postOrder(body, { riskInquiry: true })
     } catch (err) {
-      record.error = errorSummary(err)
-      if (err instanceof KountApiError && !err.uncertain && err.retryable) {
-        record.status = KOUNT_ORDER_STATUS.EVALUATION_PENDING
-        await this.save(record)
-        throw new RetryLaterError('Kount temporarily unavailable')
-      }
-      record.status = KOUNT_ORDER_STATUS.ERROR
-      record.reason = err instanceof KountApiError && err.uncertain ? 'kount_outcome_unknown' : 'kount_request_failed'
-      await this.save(record)
-      return { record }
+      const reason = !(err instanceof KountApiError)
+        ? 'kount_error'
+        : err.retryable ? 'kount_unavailable' : 'kount_request_rejected'
+      return { record: await this.applyFallback(record, reason, err) }
     }
 
     Object.assign(record, {
@@ -207,10 +196,7 @@ export class KountOrderService {
     })
 
     if (!result.decision) {
-      record.status = KOUNT_ORDER_STATUS.ERROR
-      record.reason = 'kount_no_decision'
-      await this.save(record)
-      return { record }
+      return { record: await this.applyFallback(record, 'kount_no_decision') }
     }
 
     record.decision = result.decision
@@ -218,6 +204,18 @@ export class KountOrderService {
     record.status = KOUNT_ORDER_STATUS.DECIDING
     await this.save(record)
     return { record: await this.applyDecision(record) }
+  }
+
+  /** The risk inquiry produced no decision: apply the configured fallback. */
+  async applyFallback(record, reason, err) {
+    console.warn(`[Kount] risk inquiry failed (${reason}) for ${record.checkoutSessionId}; applying fallback ${this.fallbackDecision}`)
+    record.decision = this.fallbackDecision
+    record.decisionSource = 'fallback'
+    record.fallbackReason = reason
+    if (err) record.error = errorSummary(err)
+    record.status = KOUNT_ORDER_STATUS.DECIDING
+    await this.save(record)
+    return this.applyDecision(record)
   }
 
   // ---------------------------------------------------------------------------
@@ -390,7 +388,7 @@ export class KountOrderService {
 
     record.payment = 'canceled'
     record.fulfillmentAllowed = false
-    if (RESOLVABLE.has(record.status) || record.status === KOUNT_ORDER_STATUS.EVALUATION_PENDING) {
+    if (RESOLVABLE.has(record.status)) {
       record.status = KOUNT_ORDER_STATUS.ERROR
       record.reason = paymentIntent.cancellation_reason === 'automatic'
         ? 'authorization_expired'
@@ -429,10 +427,7 @@ export class KountOrderService {
       await this.kv.put(attemptKey, JSON.stringify({ kountOrderId: result.orderId, at: new Date(this.now()).toISOString() }))
       return { reported: true, kountOrderId: result.orderId }
     } catch (err) {
-      if (err instanceof KountApiError && !err.uncertain && err.retryable) {
-        throw new RetryLaterError('Kount temporarily unavailable')
-      }
-      // Uncertain or rejected: record the outcome so a redelivery cannot
+      // Retries are exhausted. Record the outcome so a redelivery cannot
       // create a duplicate, and move on. This is telemetry, not a payment gate.
       await this.kv.put(attemptKey, JSON.stringify({ error: errorSummary(err), at: new Date(this.now()).toISOString() }))
       return { reported: false, error: errorSummary(err) }
@@ -457,6 +452,7 @@ export async function createKountOrderService(kv, env) {
       stripe: stripeService.stripe,
       kount: new KountService(cfg),
       channel: cfg.channel,
+      fallbackDecision: cfg.fallbackDecision,
     }),
   }
 }

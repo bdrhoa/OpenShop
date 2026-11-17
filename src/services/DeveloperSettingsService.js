@@ -13,14 +13,22 @@
 //     wrangler kv key delete developer:settings --namespace-id <id> --remote
 //
 import { KV_KEYS } from '../config/index.js'
+import {
+  KOUNT_MAX_RETRIES_LIMIT,
+  KOUNT_MAX_RETRIES_DEFAULT,
+  KOUNT_FALLBACK_DECISIONS,
+  KOUNT_FALLBACK_DECISION_DEFAULT,
+} from '../config/kount.js'
 import { randomHex } from '../utils/crypto.js'
+import { ValidationError } from '../utils/errors.js'
 
 /**
  * Settings that may be written from the admin UI.
  *
  * `secret: true` means the value is never returned to the browser — the API
  * reports only whether one is set. `password: true` means it is stored as a
- * salted hash and compared, never read back.
+ * salted hash and compared, never read back. `options` limits the value to a
+ * fixed list (shown as a select); `defaultValue` is what applies when unset.
  */
 export const DEVELOPER_SETTING_FIELDS = [
   { key: 'STRIPE_SECRET_KEY', label: 'Stripe secret key', secret: true },
@@ -28,6 +36,20 @@ export const DEVELOPER_SETTING_FIELDS = [
   { key: 'KOUNT_CLIENT_ID', label: 'Kount client ID', secret: false },
   { key: 'KOUNT_API_KEY', label: 'Kount API key', secret: true },
   { key: 'KOUNT_WEBHOOK_PUBLIC_KEY', label: 'Kount webhook public key (PEM)', secret: true },
+  {
+    key: 'KOUNT_MAX_RETRIES',
+    label: 'Kount retries per request (exponential backoff with jitter)',
+    secret: false,
+    options: Array.from({ length: KOUNT_MAX_RETRIES_LIMIT + 1 }, (_, n) => String(n)),
+    defaultValue: String(KOUNT_MAX_RETRIES_DEFAULT),
+  },
+  {
+    key: 'KOUNT_FALLBACK_DECISION',
+    label: 'Kount decision when the risk inquiry fails after all retries',
+    secret: false,
+    options: KOUNT_FALLBACK_DECISIONS,
+    defaultValue: KOUNT_FALLBACK_DECISION_DEFAULT,
+  },
   { key: 'OPENROUTER_API_KEY', label: 'OpenRouter API key', secret: true },
   { key: 'OPENROUTER_IMAGE_MODEL', label: 'OpenRouter image model', secret: false },
   { key: 'OPENROUTER_MODEL', label: 'OpenRouter model (agent)', secret: false },
@@ -86,6 +108,7 @@ export class DeveloperSettingsService {
         source: inKv ? 'settings' : (inEnv ? 'environment' : 'unset'),
         // Non-secret values are safe to show so they can be edited in place.
         value: field.secret ? undefined : (stored[field.key] ?? env[field.key] ?? ''),
+        ...(field.options ? { options: field.options, defaultValue: field.defaultValue } : {}),
       }
     })
   }
@@ -103,7 +126,11 @@ export class DeveloperSettingsService {
       if (value === '' || value === null || value === undefined) {
         delete stored[key]
       } else {
-        stored[key] = String(value)
+        const text = String(value).trim()
+        if (field.options && !field.options.includes(text)) {
+          throw new ValidationError(`${field.label} must be one of: ${field.options.join(', ')}`)
+        }
+        stored[key] = field.options ? text : String(value)
       }
     }
 

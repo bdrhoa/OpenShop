@@ -104,33 +104,61 @@ describe('KountOrderService', () => {
     expect(kount.postOrder).not.toHaveBeenCalled()
   })
 
-  it('a stale evaluating lock is parked as outcome unknown, not re-posted', async () => {
+  it('a stale evaluating lock is evaluated again', async () => {
     await kv.put(orderKey(SESSION_ID), JSON.stringify({ checkoutSessionId: SESSION_ID, status: 'evaluating', lockedAt: new Date(now - 10 * 60000).toISOString() }))
     const { record } = await svc.handleCheckoutCompleted(heldSession())
-    expect(record).toMatchObject({ status: 'error', reason: 'kount_outcome_unknown' })
-    expect(kount.postOrder).not.toHaveBeenCalled()
+    expect(kount.postOrder).toHaveBeenCalledTimes(1)
+    expect(record).toMatchObject({ status: 'approved', decisionSource: 'kount' })
   })
 
-  it('transient Kount failure asks Stripe to redeliver and then succeeds', async () => {
-    kount.postOrder.mockRejectedValueOnce(new KountApiError('503', { operation: 'evaluate_order', status: 503, phase: 'response_received', retryable: true }))
-    await expect(svc.handleCheckoutCompleted(heldSession())).rejects.toBeInstanceOf(RetryLaterError)
-    expect((await svc.get(SESSION_ID)).status).toBe('evaluation_pending')
-    const { record } = await svc.handleCheckoutCompleted(heldSession())
-    expect(record.status).toBe('approved')
-  })
+  describe('fallback when the risk inquiry fails after all retries', () => {
+    const unavailable = () => Object.assign(
+      new KountApiError('503', { operation: 'evaluate_order', status: 503, phase: 'response_received', retryable: true }),
+      { attempts: 3 },
+    )
 
-  it('uncertain Kount failure holds payment for a human (never approves)', async () => {
-    kount.postOrder.mockRejectedValueOnce(new KountApiError('timeout', { operation: 'evaluate_order', phase: 'awaiting_response', retryable: false }))
-    const { record } = await svc.handleCheckoutCompleted(heldSession())
-    expect(record).toMatchObject({ status: 'error', reason: 'kount_outcome_unknown', payment: 'authorized', fulfillmentAllowed: false })
-    expect(stripe.paymentIntents.capture).not.toHaveBeenCalled()
-  })
+    it('defaults to APPROVE: captures and allows fulfillment', async () => {
+      kount.postOrder.mockRejectedValueOnce(unavailable())
+      const { record } = await svc.handleCheckoutCompleted(heldSession())
+      expect(record).toMatchObject({
+        status: 'approved', decision: 'APPROVE', decisionSource: 'fallback', fallbackReason: 'kount_unavailable',
+        payment: 'captured', fulfillmentAllowed: true, kountOrderId: null,
+      })
+      expect(record.error).toMatchObject({ status: 503, attempts: 3 })
+      expect(stripe.paymentIntents.capture).toHaveBeenCalledTimes(1)
+      expect(kount.updateOrder).not.toHaveBeenCalled() // no Kount order to update
+      expect(buyerStatus(record)).toBe('confirmed')
+    })
 
-  it('a missing decision is an error, not an approval', async () => {
-    kount.postOrder.mockResolvedValueOnce({ orderId: 'K1', decision: null })
-    const { record } = await svc.handleCheckoutCompleted(heldSession())
-    expect(record).toMatchObject({ status: 'error', reason: 'kount_no_decision' })
-    expect(stripe.paymentIntents.capture).not.toHaveBeenCalled()
+    it('DECLINE fallback releases the authorization', async () => {
+      svc = new KountOrderService({ kv, stripe, kount, fallbackDecision: 'DECLINE', now: () => now })
+      kount.postOrder.mockRejectedValueOnce(new KountApiError('timeout', { operation: 'evaluate_order', phase: 'awaiting_response', retryable: true }))
+      const { record } = await svc.handleCheckoutCompleted(heldSession())
+      expect(record).toMatchObject({ status: 'declined', decisionSource: 'fallback', fallbackReason: 'kount_unavailable', payment: 'canceled' })
+      expect(stripe.paymentIntents.cancel).toHaveBeenCalledTimes(1)
+      expect(stripe.paymentIntents.capture).not.toHaveBeenCalled()
+    })
+
+    it('a rejected request also falls back, with its own reason', async () => {
+      kount.postOrder.mockRejectedValueOnce(new KountApiError('400', { operation: 'evaluate_order', status: 400, phase: 'response_received', retryable: false }))
+      const { record } = await svc.handleCheckoutCompleted(heldSession())
+      expect(record).toMatchObject({ status: 'approved', fallbackReason: 'kount_request_rejected' })
+    })
+
+    it('a response without a decision falls back and still reports the outcome to Kount', async () => {
+      kount.postOrder.mockResolvedValueOnce({ orderId: 'K1', transactionId: 'K1#0', decision: null })
+      const { record } = await svc.handleCheckoutCompleted(heldSession())
+      expect(record).toMatchObject({ status: 'approved', decisionSource: 'fallback', fallbackReason: 'kount_no_decision', kountStatusReported: 'CAPTURED' })
+      expect(kount.updateOrder).toHaveBeenCalledWith('K1', expect.objectContaining({ transactions: [expect.objectContaining({ transactionStatus: 'CAPTURED' })] }))
+    })
+
+    it('a duplicate delivery after the fallback does not evaluate again', async () => {
+      kount.postOrder.mockRejectedValueOnce(unavailable())
+      await svc.handleCheckoutCompleted(heldSession())
+      await svc.handleCheckoutCompleted(heldSession())
+      expect(kount.postOrder).toHaveBeenCalledTimes(1)
+      expect(stripe.paymentIntents.capture).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('a failed Kount status update is retried on the next delivery without recapturing', async () => {

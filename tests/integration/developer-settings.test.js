@@ -86,6 +86,31 @@ describe('Developer Settings', () => {
     expect(field.value).toBe('env/model')
   })
 
+  it('offers the Kount retry and fallback settings as fixed choices and rejects other values', async () => {
+    const list = await executeRequest(app, createTestRequest('/api/admin/developer-settings', {
+      headers: createAdminHeaders(adminToken),
+    }), env)
+    const fields = (await parseJsonResponse(list)).fields
+    expect(fields.find((f) => f.key === 'KOUNT_MAX_RETRIES')).toMatchObject({ options: ['0', '1', '2', '3'], defaultValue: '2' })
+    expect(fields.find((f) => f.key === 'KOUNT_FALLBACK_DECISION')).toMatchObject({ options: ['APPROVE', 'DECLINE'], defaultValue: 'APPROVE' })
+
+    const bad = await executeRequest(app, createTestRequest('/api/admin/developer-settings', {
+      method: 'PUT',
+      headers: createAdminHeaders(adminToken),
+      body: JSON.stringify({ KOUNT_MAX_RETRIES: '5' }),
+    }), env)
+    expect(bad.status).toBe(400)
+
+    const good = await executeRequest(app, createTestRequest('/api/admin/developer-settings', {
+      method: 'PUT',
+      headers: createAdminHeaders(adminToken),
+      body: JSON.stringify({ KOUNT_FALLBACK_DECISION: 'DECLINE', KOUNT_MAX_RETRIES: '0' }),
+    }), env)
+    const saved = (await parseJsonResponse(good)).fields
+    expect(saved.find((f) => f.key === 'KOUNT_FALLBACK_DECISION').value).toBe('DECLINE')
+    expect(saved.find((f) => f.key === 'KOUNT_MAX_RETRIES').value).toBe('0')
+  })
+
   it('rejects changing the password through the generic settings route', async () => {
     const req = createTestRequest('/api/admin/developer-settings', {
       method: 'PUT',

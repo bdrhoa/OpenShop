@@ -5,6 +5,10 @@ import {
   clearKountTokenCache,
   parseOrderResponse,
   isKountEnabled,
+  backoffDelay,
+  parseRetryAfter,
+  parseMaxRetries,
+  parseFallbackDecision,
 } from '../../../src/services/KountService.js'
 
 const cfg = { apiKey: 'portal-key', tokenUrl: 'https://login-uat.equifax.com/as/token', apiUrl: 'https://api-sandbox.kount.com' }
@@ -24,8 +28,13 @@ describe('KountService', () => {
     now = 1000000
   })
 
-  function service(fetchImpl) {
-    return new KountService(cfg, { fetch: fetchImpl, now: () => now, sleep: async () => {} })
+  let sleep
+  beforeEach(() => {
+    sleep = vi.fn(async () => {})
+  })
+
+  function service(fetchImpl, { maxRetries = 2, random = () => 0.5 } = {}) {
+    return new KountService({ ...cfg, maxRetries }, { fetch: fetchImpl, now: () => now, sleep, random })
   }
 
   it('requests a client_credentials token with the portal key as Basic credential', async () => {
@@ -83,27 +92,57 @@ describe('KountService', () => {
     expect(result.decision).toBe('APPROVE')
   })
 
-  it('does not re-POST after an uncertain failure (no response)', async () => {
+  it('retries timeouts with exponentially growing, jittered waits', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(tokenResponse())
       .mockRejectedValueOnce(new DOMException('timed out', 'TimeoutError'))
-    const err = await service(fetchMock).postOrder({ merchantOrderId: 'cs_1' }, { riskInquiry: true }).catch((e) => e)
-    expect(err).toBeInstanceOf(KountApiError)
-    expect(err.uncertain).toBe(true)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+      .mockRejectedValueOnce(new DOMException('timed out', 'TimeoutError'))
+      .mockResolvedValueOnce(json(200, { order: { orderId: 'K1', riskInquiry: { decision: 'APPROVE' } } }))
+    const result = await service(fetchMock).postOrder({ merchantOrderId: 'cs_1' }, { riskInquiry: true })
+    expect(result.decision).toBe('APPROVE')
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    // random() = 0.5 over windows of 250 ms and 500 ms
+    expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([125, 250])
   })
 
-  it('treats HTTP 500 as uncertain and 400 as a definite rejection', async () => {
-    const svc500 = service(vi.fn().mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(json(500, {})))
-    const e500 = await svc500.postOrder({}, { riskInquiry: true }).catch((e) => e)
-    expect(e500.uncertain).toBe(true)
+  it('stops after maxRetries and reports how many attempts were made', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(tokenResponse()).mockImplementation(async () => json(500, {}))
+    const err = await service(fetchMock, { maxRetries: 3 }).postOrder({}, { riskInquiry: true }).catch((e) => e)
+    expect(err).toBeInstanceOf(KountApiError)
+    expect(err.uncertain).toBe(true)
+    expect(err.attempts).toBe(4)
+    expect(sleep).toHaveBeenCalledTimes(3)
+  })
 
-    clearKountTokenCache()
-    const svc400 = service(vi.fn().mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(json(400, { error: { message: 'bad' } })))
-    const e400 = await svc400.postOrder({}, { riskInquiry: true }).catch((e) => e)
-    expect(e400.uncertain).toBe(false)
-    expect(e400.retryable).toBe(false)
-    expect(e400.message).not.toMatch(/bad/) // provider messages are not echoed
+  it('makes a single attempt when maxRetries is 0', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(json(503, {}))
+    const err = await service(fetchMock, { maxRetries: 0 }).postOrder({}, { riskInquiry: true }).catch((e) => e)
+    expect(err.attempts).toBe(1)
+    expect(sleep).not.toHaveBeenCalled()
+  })
+
+  it('does not retry a definite 4xx rejection', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(json(400, { error: { message: 'bad' } }))
+    const err = await service(fetchMock).postOrder({}, { riskInquiry: true }).catch((e) => e)
+    expect(err.retryable).toBe(false)
+    expect(err.uncertain).toBe(false)
+    expect(err.attempts).toBe(1)
+    expect(err.message).not.toMatch(/bad/) // provider messages are not echoed
+  })
+
+  it('honors Retry-After, and gives up when it exceeds the backoff cap', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(json(429, {}, { 'Retry-After': '2' }))
+      .mockResolvedValueOnce(json(200, { order: { orderId: 'K1', riskInquiry: { decision: 'REVIEW' } } }))
+    await service(fetchMock).postOrder({}, { riskInquiry: true })
+    expect(sleep).toHaveBeenCalledWith(2000)
+
+    sleep.mockClear()
+    const slow = vi.fn().mockResolvedValueOnce(json(429, {}, { 'Retry-After': '60' }))
+    const err = await service(slow).postOrder({}, { riskInquiry: true }).catch((e) => e)
+    expect(err.status).toBe(429)
+    expect(sleep).not.toHaveBeenCalled()
   })
 
   it('retries an idempotent PATCH after an uncertain failure', async () => {
@@ -117,7 +156,38 @@ describe('KountService', () => {
   })
 })
 
+describe('backoff and settings helpers', () => {
+  it('grows the jitter window exponentially up to the cap', () => {
+    const top = () => 0.999999
+    expect([0, 1, 2, 3, 4, 5].map((n) => backoffDelay(n, { random: top }))).toEqual([249, 499, 999, 1999, 3999, 3999])
+    expect(backoffDelay(2, { random: () => 0 })).toBe(0)
+  })
+
+  it('parses Retry-After seconds and HTTP dates', () => {
+    expect(parseRetryAfter('3')).toBe(3000)
+    expect(parseRetryAfter('Tue, 17 Nov 2026 12:00:05 GMT', Date.parse('2026-11-17T12:00:00Z'))).toBe(5000)
+    expect(parseRetryAfter('')).toBeUndefined()
+  })
+
+  it('clamps retries to 0-3 and defaults invalid settings', () => {
+    expect(parseMaxRetries('0')).toBe(0)
+    expect(parseMaxRetries(3)).toBe(3)
+    expect(parseMaxRetries('9')).toBe(3)
+    expect(parseMaxRetries('-1')).toBe(2)
+    expect(parseMaxRetries(undefined)).toBe(2)
+    expect(parseFallbackDecision('decline')).toBe('DECLINE')
+    expect(parseFallbackDecision('REVIEW')).toBe('APPROVE')
+    expect(parseFallbackDecision(undefined)).toBe('APPROVE')
+  })
+})
+
 describe('helpers', () => {
+  it('accepts riskInquiry as an object or a one-element array', () => {
+    const inquiry = { decision: 'DECLINE', device: { id: 'dev-1' } }
+    expect(parseOrderResponse({ order: { riskInquiry: [inquiry] } })).toMatchObject({ decision: 'DECLINE', deviceId: 'dev-1' })
+    expect(parseOrderResponse({ order: { riskInquiry: inquiry } })).toMatchObject({ decision: 'DECLINE', deviceId: 'dev-1' })
+  })
+
   it('never maps an unknown decision to approval', () => {
     expect(parseOrderResponse({ order: { riskInquiry: { decision: 'DECLINED' } } }).decision).toBeNull()
     expect(parseOrderResponse(null).decision).toBeNull()

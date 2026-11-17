@@ -14,12 +14,30 @@ export const KOUNT_DDC_ENVIRONMENT_DEFAULT = 'TEST'
 /** Refresh a cached bearer token this long before it expires. */
 export const KOUNT_TOKEN_REFRESH_MARGIN_MS = 60_000
 
-/** Per-request timeout for Kount HTTP calls. */
-export const KOUNT_REQUEST_TIMEOUT_MS = 8_000
+/**
+ * Per-request timeout for Kount HTTP calls. Kept short so the worst case
+ * (every retry timing out) still fits inside one Stripe webhook delivery.
+ */
+export const KOUNT_REQUEST_TIMEOUT_MS = 5_000
 
-/** Bounded retry for transient (pre-send / 429 / 503) failures. */
-export const KOUNT_MAX_ATTEMPTS = 3
-export const KOUNT_BACKOFF_MS = [250, 1_000]
+/** Retries after the first attempt (setting KOUNT_MAX_RETRIES, 0-3). */
+export const KOUNT_MAX_RETRIES_LIMIT = 3
+export const KOUNT_MAX_RETRIES_DEFAULT = 2
+
+/**
+ * Exponential backoff with full jitter: the wait before retry n (0-based) is
+ * random in [0, min(CAP, BASE * 2^n)). A Retry-After longer than CAP ends the
+ * retries instead of stalling the webhook.
+ */
+export const KOUNT_BACKOFF_BASE_MS = 250
+export const KOUNT_BACKOFF_CAP_MS = 4_000
+
+/**
+ * Decision applied when the risk inquiry cannot produce one after all retries
+ * (setting KOUNT_FALLBACK_DECISION).
+ */
+export const KOUNT_FALLBACK_DECISIONS = ['APPROVE', 'DECLINE']
+export const KOUNT_FALLBACK_DECISION_DEFAULT = 'APPROVE'
 
 /** An in-flight evaluation lock older than this is treated as abandoned. */
 export const KOUNT_EVALUATION_LOCK_MS = 120_000

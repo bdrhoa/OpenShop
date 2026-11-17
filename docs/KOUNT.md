@@ -16,9 +16,11 @@ Stripe hosted Checkout ── card authorized (not captured)
         │
 checkout.session.completed ──► POST /api/stripe-webhook
         │   POST /commerce/v2/orders?riskInquiry=true  (authResult APPROVED, AUTHORIZED)
+        │   retried up to KOUNT_MAX_RETRIES times (exponential backoff + jitter)
         ├─ APPROVE → capture   → PATCH CAPTURED → fulfillment allowed
         ├─ DECLINE → cancel    → PATCH CANCELED → fulfillment blocked
-        └─ REVIEW  → stay held → fulfillment blocked until a reviewer decides
+        ├─ REVIEW  → stay held → fulfillment blocked until a reviewer decides
+        └─ no decision after all retries → KOUNT_FALLBACK_DECISION (APPROVE or DECLINE)
                          ├─ Kount reviewer → POST /api/kount-webhook
                          └─ admin          → POST /api/admin/kount/orders/:id/resolve
 ```
@@ -36,19 +38,33 @@ Code: [`src/services/KountOrderService.js`](../src/services/KountOrderService.js
 
 | status | payment | fulfillment | buyer sees | next |
 |--------|---------|-------------|------------|------|
-| `evaluating` | authorized | blocked | processing | in-flight lock (2 min) |
-| `evaluation_pending` | authorized | blocked | processing | Kount returned a transient failure; Stripe redelivers (webhook returned 503) |
+| `evaluating` | authorized | blocked | processing | in-flight lock (2 min); a stale lock is evaluated again |
 | `deciding` | authorized | blocked | processing | decision known, capture/cancel not confirmed; next delivery finishes it |
 | `approved` | captured | **allowed** | confirmed | — |
 | `declined` | canceled | blocked | declined | — |
 | `review` | authorized | blocked | received | reviewer decision |
 | `error` | authorized / canceled | blocked | received | human; see `reason` |
 
-`error` reasons: `kount_outcome_unknown` (Kount may have created the order: timeout, 5xx, or a crashed evaluation; **never re-posted**, to avoid a duplicate Kount order), `kount_request_failed` (definite 4xx), `kount_no_decision`, `payment_not_held:*`, `capture_impossible:*`, `authorization_expired`, `declined_after_capture`.
+`error` reasons: `payment_not_held:*`, `capture_impossible:*`, `authorization_expired`, `declined_after_capture`.
+
+## Retries and the fallback decision
+
+Every Kount request (token, risk inquiry, status update, data-only order) is retried on transient failures: network errors and timeouts (5 s per request), HTTP 401 (with a fresh token), 408, 429 and 5xx. Other 4xx responses are not retried.
+
+- **Retries:** `KOUNT_MAX_RETRIES`, 0–3, default 2 (so at most 4 attempts).
+- **Backoff:** exponential with full jitter. The wait before retry *n* is random in `[0, min(4 s, 250 ms × 2ⁿ))`. A `Retry-After` header is honored; one longer than 4 s ends the retries.
+- **Fallback:** if the risk inquiry still has no decision, `KOUNT_FALLBACK_DECISION` (`APPROVE` by default, or `DECLINE`) is applied as if Kount had returned it. The order records `decisionSource: "fallback"` and `fallbackReason`:
+  - `kount_unavailable`: transient failures on every attempt.
+  - `kount_request_rejected`: a non-retryable 4xx, which usually means a bad payload or bad credentials. With an `APPROVE` fallback this approves every order until fixed, so watch the logs (`[Kount] risk inquiry failed …`).
+  - `kount_no_decision`: Kount answered without a recognized decision. Its order is still updated with the outcome.
+  - `kount_error`: an unexpected internal error.
+- **Duplicate risk:** Kount cannot look up an order by `merchantOrderId`, so a risk inquiry that timed out cannot be checked before it is retried. A retry after a timeout may create a second Kount order for the same checkout.
+
+Both settings are in **Admin → Developer settings** (or Worker vars) and take effect on the next request.
 
 Rules this enforces:
 
-- **A failure is never an approval.** Kount errors keep the payment held and fulfillment blocked.
+- **Failures are explicit.** A fallback decision is never mistaken for a Kount decision: `decisionSource` says which it was.
 - **Every step is resumable and idempotent.** Capture and cancel use Stripe idempotency keys. A failed Kount `PATCH` stays in `pendingKountStatus` and is retried on the next delivery without capturing again.
 - **No regression.** Duplicate or late reviewer events on a settled order are acknowledged and ignored.
 - **Decline releases, not refunds.** OpenShop does not capture on REVIEW, so a reviewer decline cancels the authorization. Cancellations carry no `fraudulent` reason, because that feeds Radar and can skew later decisions for the same test identities.
@@ -65,6 +81,8 @@ Set these as Worker secrets/vars or in **Admin → Developer settings** (KV take
 | `KOUNT_API_KEY` | yes | Portal API key, sent as `Authorization: Basic <key>` to the token endpoint. Secret. |
 | `STRIPE_WEBHOOK_SECRET` | yes | `whsec_…` signing secret of the Stripe endpoint below. Screening (and the payment hold) stays **off** without it, so authorizations can't be held with nothing to release them. |
 | `KOUNT_WEBHOOK_PUBLIC_KEY` | for reviewer webhooks | PEM public key from the Kount portal. |
+| `KOUNT_MAX_RETRIES` | no | Retries per Kount request, `0`–`3`. Default `2`. |
+| `KOUNT_FALLBACK_DECISION` | no | `APPROVE` (default) or `DECLINE`, applied when the risk inquiry fails after all retries. |
 | `KOUNT_CHANNEL` | no | Kount channel identifier, if your tenant uses channels. |
 | `KOUNT_TOKEN_URL` / `KOUNT_API_URL` | no | Defaults: Sandbox `https://login-uat.equifax.com/as/token` and `https://api-sandbox.kount.com`. |
 | `KOUNT_DDC_ENVIRONMENT` | no | `TEST` (default) or `PROD`. |
@@ -85,7 +103,13 @@ CSP allows `https://*.kaptcha.com` (DDC collector) in `script-src`, `connect-src
 
 ## Device data collection
 
-`@kount/kount-web-client-sdk` is loaded lazily from `App.jsx` on every storefront entry, including deep links, but not on `/admin`. This matters because buyers can reach hosted Stripe Checkout straight from a product page. The session ID is 32 hex characters, generated once per browser session (`sessionStorage`) and sent with each checkout request. The server accepts `[a-zA-Z0-9.]{1,64}`. An invalid or missing ID never blocks checkout: the order is evaluated without device data.
+`@kount/kount-web-client-sdk` is loaded lazily from `App.jsx` on every storefront entry, including deep links, but not on `/admin`. This matters because buyers can reach hosted Stripe Checkout straight from a product page.
+
+- **When it runs:** whenever `KOUNT_CLIENT_ID` is set (`/api/kount/config` → `ddcEnabled`), even before screening is fully configured, so collection can be checked on its own.
+- **Session ID:** 32 hex characters, generated once per browser session (`sessionStorage`) and passed to the SDK. The same ID is sent with each checkout request and becomes the order's `deviceSessionId`. The server accepts `[a-zA-Z0-9.]{1,64}`.
+- **Checkout:** a checkout click waits up to 2 s for collection to finish (`collect-end`) before redirecting to Stripe, so a fast click does not cut collection short. It never blocks: an invalid or missing ID means the order is evaluated without device data.
+- **Checking it works:** the browser console logs `[Kount] device data collection started/finished <session id>`, and the network panel shows requests to `tst.kaptcha.com` (Sandbox). On the evaluated order, `deviceId` in the KV record (from `riskInquiry.device.id`) confirms Kount matched the device.
+- **Local dev:** `npm run dev` and `npm run dev:local` serve the prebuilt `dist/` without rebuilding it. Run `npm run build` first, or the storefront runs an older bundle without collection.
 
 ## Admin API
 
