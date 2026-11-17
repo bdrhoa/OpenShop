@@ -1,4 +1,6 @@
+import { useEffect } from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+import { startKountCollection } from './lib/kount'
 import { CartProvider } from './contexts/CartContext'
 import { StorefrontThemeProvider } from './contexts/StorefrontThemeContext'
 import { Storefront } from './pages/storefront/Storefront'
@@ -11,6 +13,11 @@ import { About } from './pages/storefront/About'
 import { DynamicPage } from './pages/storefront/DynamicPage'
 
 function App() {
+  // Kount device data collection on every storefront entry (not admin).
+  useEffect(() => {
+    if (!window.location.pathname.startsWith('/admin')) startKountCollection()
+  }, [])
+
   return (
     <CartProvider>
       <Router>

@@ -1,14 +1,17 @@
 // Security headers middleware
 import { IMAGE_PROXY_CSP } from '../config/index.js'
 
+// Kount device data collection (sandbox tst.kaptcha.com, production ssl.kaptcha.com).
+const KOUNT_DDC_HOSTS = 'https://*.kaptcha.com'
+
 const APP_CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com", // Stripe requires unsafe-inline
+  `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com ${KOUNT_DDC_HOSTS}`, // Stripe requires unsafe-inline
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' data: https: blob:",
   "font-src 'self' data: https://fonts.gstatic.com",
-  "connect-src 'self' https://api.stripe.com https://*.stripe.com https://oauth2.googleapis.com https://www.googleapis.com",
-  "frame-src 'self' https://js.stripe.com https://hooks.stripe.com",
+  `connect-src 'self' https://api.stripe.com https://*.stripe.com https://oauth2.googleapis.com https://www.googleapis.com ${KOUNT_DDC_HOSTS}`,
+  `frame-src 'self' https://js.stripe.com https://hooks.stripe.com ${KOUNT_DDC_HOSTS}`,
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

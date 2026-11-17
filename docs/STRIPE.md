@@ -87,25 +87,30 @@ product once. A product still carrying placeholder ids is created in Stripe
 on that save, and its real product and price ids are written back to KV.
 Products created after the key is set behave normally.
 
-## Webhook Setup (Optional)
+## Webhook Setup (Optional; required for Kount screening)
 
 Webhooks allow you to track order completion and payment events in real-time.
+With [Kount screening](./KOUNT.md) enabled, card payments are authorized with
+`capture_method=manual` and **captured by the webhook** after Kount approves, so
+the endpoint and `STRIPE_WEBHOOK_SECRET` must be configured.
 
 ### Setting Up Webhooks
 
 1. **Stripe Dashboard** → **Developers** → **Webhooks**
 2. **Add Endpoint**: `https://your-project.workers.dev/api/stripe-webhook`
 3. **Select Events**:
-   - `checkout.session.completed` - Fired when a checkout session is completed
-   - `payment_intent.succeeded` - Fired when a payment is successfully processed
+   - `checkout.session.completed` - Fired when a checkout session is completed (triggers Kount evaluation)
+   - `payment_intent.payment_failed` - Refused attempts, reported to Kount as data-only orders
+   - `payment_intent.canceled` - Held authorization expired/canceled
+4. Copy the signing secret into `STRIPE_WEBHOOK_SECRET` (`wrangler secret put STRIPE_WEBHOOK_SECRET` or Admin → Developer settings).
 
 ### Webhook Security
 
-Stripe webhooks include a signature that verifies the request came from Stripe. OpenShop validates this signature to ensure webhook security.
+Stripe webhooks include a signature that verifies the request came from Stripe. `/api/stripe-webhook` verifies it against the raw body with `STRIPE_WEBHOOK_SECRET` and rejects unsigned or tampered deliveries with 400.
 
 ### Handling Webhook Events
 
-You can extend OpenShop to handle webhook events by modifying the webhook handler in `src/routes/public/checkout.js`. Common use cases:
+You can extend OpenShop to handle webhook events by modifying the webhook handler in `src/routes/public/kount.js`. Common use cases:
 
 - Update order status in your system
 - Send confirmation emails

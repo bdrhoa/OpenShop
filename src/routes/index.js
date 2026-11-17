@@ -10,6 +10,7 @@ import imageProxyRouter from './public/imageProxy.js'
 import storeSettingsRouter, { contactEmailRouter } from './public/storeSettings.js'
 import imagesRouter from './public/images.js'
 import pagesRouter from './public/pages.js'
+import kountRouter from './public/kount.js'
 
 // Admin routes
 import authRouter from './admin/auth.js'
@@ -25,6 +26,7 @@ import { isStripeConfigured } from '../services/StripeService.js'
 import { resolveSetting } from '../services/DeveloperSettingsService.js'
 import { getKVNamespace } from '../utils/kv.js'
 import developerSettingsRouter from './admin/developer-settings.js'
+import adminKountRouter from './admin/kount.js'
 
 /**
  * Register all routes on the app
@@ -60,6 +62,7 @@ export function registerRoutes(app) {
   app.route('/api/collections', collectionsRouter)
   app.route('/api/storefront', storefrontRouter)
   app.route('/api', checkoutRouter) // /api/create-checkout-session, etc.
+  app.route('/api', kountRouter) // /api/kount/config, /api/stripe-webhook, /api/kount-webhook
   app.route('/api/image-proxy', imageProxyRouter)
   app.route('/api/store-settings', storeSettingsRouter)
   app.route('/api/contact-email', contactEmailRouter)
@@ -77,4 +80,5 @@ export function registerRoutes(app) {
   app.route('/api/admin/ai', aiRouter)
   app.route('/api/admin/agent', agentRouter) // /api/admin/agent/chat, /models
   app.route('/api/admin/developer-settings', developerSettingsRouter)
+  app.route('/api/admin/kount', adminKountRouter)
 }

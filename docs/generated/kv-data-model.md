@@ -91,6 +91,13 @@
 
 Only known root props are kept; unknown keys are dropped during sanitization (`validatePageData`).
 
+## Kount screening
+
+| Key | Shape |
+|-----|-------|
+| `kount:order:<checkout session id>` | `{ checkoutSessionId, paymentIntentId, status, decision, decisionSource, reason, kountOrderId, kountTransactionId, omniscore, deviceId, deviceSessionId, correlationId, payment, fulfillmentAllowed, kountStatusReported, pendingKountStatus, error, lockedAt, createdAt, updatedAt }`. See [KOUNT.md](../KOUNT.md). |
+| `kount:order:attempt:<charge id>` | `{ kountOrderId \| error, at }`: dedupe marker for data-only failed-attempt orders |
+
 ## Settings and auth
 
 Store settings and admin tokens may use additional keys via `src/services/StoreSettingsService.js` and auth middleware—grep `namespace.put` in `src/` when extending this doc.

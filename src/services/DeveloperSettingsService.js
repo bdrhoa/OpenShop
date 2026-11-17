@@ -24,6 +24,10 @@ import { randomHex } from '../utils/crypto.js'
  */
 export const DEVELOPER_SETTING_FIELDS = [
   { key: 'STRIPE_SECRET_KEY', label: 'Stripe secret key', secret: true },
+  { key: 'STRIPE_WEBHOOK_SECRET', label: 'Stripe webhook signing secret', secret: true },
+  { key: 'KOUNT_CLIENT_ID', label: 'Kount client ID', secret: false },
+  { key: 'KOUNT_API_KEY', label: 'Kount API key', secret: true },
+  { key: 'KOUNT_WEBHOOK_PUBLIC_KEY', label: 'Kount webhook public key (PEM)', secret: true },
   { key: 'OPENROUTER_API_KEY', label: 'OpenRouter API key', secret: true },
   { key: 'OPENROUTER_IMAGE_MODEL', label: 'OpenRouter image model', secret: false },
   { key: 'OPENROUTER_MODEL', label: 'OpenRouter model (agent)', secret: false },

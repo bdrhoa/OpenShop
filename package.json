@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.0.10",
+    "@kount/kount-web-client-sdk": "2.2.4",
     "@puckeditor/core": "^0.23.0",
     "@stripe/stripe-js": "^7.9.0",
     "@tailwindcss/vite": "^4.1.13",

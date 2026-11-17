@@ -383,7 +383,8 @@ describe('StripeService', () => {
         currency: 'usd',
         customer_email: 'test@example.com',
         payment_status: 'paid',
-        created: expect.any(Number)
+        created: expect.any(Number),
+        kountHold: false,
       })
       expect(mockStripe.checkout.sessions.retrieve).toHaveBeenCalledWith(sessionId)
     })
