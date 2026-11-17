@@ -124,3 +124,22 @@ Harness tests live in `tests/harness/`; docs/architecture rules are enforced by
 
 Local development never touches Cloudflare. To deploy for real, see
 [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) and [docs/CONFIGURATION.md](./docs/CONFIGURATION.md).
+
+### Deploying from your machine
+
+`dist/` is in `.gitignore`, but it is still tracked: the build workflow on
+`main` rebuilds it and commits the result. A local build overwrites those
+tracked files (Vite puts a content hash in every asset name), so your working
+tree shows deleted assets and a modified `dist/index.html`. Those changes
+should never be committed; CI rebuilds `dist/` after a merge.
+
+To deploy the site named in `wrangler.toml` and leave the working tree clean:
+
+```bash
+npm run build && npx wrangler deploy && git restore dist
+```
+
+This builds the frontend, deploys that build, then restores `dist/` to the
+committed version. The deployed site keeps running what you just built.
+Always build before `npx wrangler deploy`: the restored `dist/` is the last CI
+build and may not match your branch.
