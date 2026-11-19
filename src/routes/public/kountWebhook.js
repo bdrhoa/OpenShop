@@ -17,6 +17,32 @@ import { KountClient } from '../../services/KountClient.js'
 
 const router = new Hono()
 
+export const KOUNT_FAILED_DELIVERY_KEY = 'kount:webhook:last_failed'
+
+/**
+ * Keep the most recent signature-failed delivery for 24 hours so it can be
+ * re-verified offline against candidate signing schemes (for example with
+ * `wrangler kv key get kount:webhook:last_failed`). Contains only what Kount
+ * sent plus the configured public key, which is public; no secrets.
+ */
+async function captureFailedDelivery(kv, config, { signature, timestamp, rawBody, headerNames }) {
+  try {
+    let binary = ''
+    for (const byte of rawBody) binary += String.fromCharCode(byte)
+    await kv.put(KOUNT_FAILED_DELIVERY_KEY, JSON.stringify({
+      receivedAt: new Date().toISOString(),
+      environment: config.environment,
+      timestamp,
+      signature,
+      bodyBase64: btoa(binary),
+      headerNames,
+      publicKey: config.webhookPublicKey,
+    }), { expirationTtl: 24 * 3600 })
+  } catch (error) {
+    console.warn(`[Kount] could not capture failed delivery: ${error?.message || error}`)
+  }
+}
+
 /**
  * After a signature failure, log which key / signing variant would have
  * verified it: the configured key, and Kount's currently published key
@@ -100,6 +126,7 @@ router.post('/kount-webhook', async (c) => {
       console.warn(`[Kount] webhook rejected: ${error.code} (eventType ${eventType}; headers: ${headerNames})`)
       if (error.code === 'invalid_signature') {
         await logSignatureDiagnostics(config, { signature, timestamp, rawBody })
+        await captureFailedDelivery(kv, config, { signature, timestamp, rawBody, headerNames })
       }
       return c.json({ error: error.message }, error.status)
     }

@@ -392,6 +392,12 @@ describe('Kount integration', () => {
       expect(diag.published.keys[0].verifies.pss32_timestampBody).toBe(true)
       expect(line).not.toContain(kountKey.publicKeyBase64)
       warn.mockRestore()
+
+      // The failed delivery is kept for offline re-verification, without secrets.
+      const captured = JSON.parse(await kv.get('kount:webhook:last_failed'))
+      expect(captured).toEqual(expect.objectContaining({ environment: 'SANDBOX', publicKey: signer.publicKeyBase64 }))
+      expect(JSON.parse(Buffer.from(captured.bodyBase64, 'base64').toString())).toEqual(SAMPLE_EVENT)
+      expect(JSON.stringify(captured)).not.toContain('kount-secret-key')
     })
 
     it('rejects a bad signature (401) and a stale timestamp (400)', async () => {
