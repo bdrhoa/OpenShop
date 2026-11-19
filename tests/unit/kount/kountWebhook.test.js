@@ -93,6 +93,8 @@ describe('diagnoseKountSignature', () => {
   it('reports the standard variant verifying with the right key', async () => {
     const d = await diagnoseKountSignature({ publicKey: signer.publicKeyBase64, signature: await signer.sign(timestamp, body), timestamp, rawBody: raw })
     expect(d.modulusBits).toBe(2048)
+    expect(d.signatureBits).toBe(2048)
+    expect(d.signatureMatchesKeySize).toBe(true)
     expect(d.fingerprint).toBe(await keyFingerprint(signer.publicKeyPem))
     expect(d.verifies.pss32_timestampBody).toBe(true)
     expect(d.verifies.pss32_bodyOnly).toBe(false)

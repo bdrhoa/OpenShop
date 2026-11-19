@@ -131,6 +131,10 @@ export async function diagnoseKountSignature({ publicKey, signature, timestamp, 
     const pss = await crypto.subtle.importKey('spki', der, { name: 'RSA-PSS', hash: 'SHA-256' }, false, ['verify'])
     const bits = pss.algorithm.modulusLength
     result.modulusBits = bits
+    // An RSA signature is exactly as long as the key's modulus; a different
+    // length proves the delivery was signed with a different key.
+    result.signatureBits = sig.length * 8
+    result.signatureMatchesKeySize = sig.length * 8 === bits
     const maxSalt = Math.ceil((bits - 1) / 8) - 32 - 2
     const tryPss = (saltLength, data) => crypto.subtle.verify({ name: 'RSA-PSS', saltLength }, pss, sig, data).catch(() => false)
     result.verifies.pss32_timestampBody = await tryPss(32, withTimestamp)
