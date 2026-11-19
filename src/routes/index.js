@@ -12,6 +12,7 @@ import imagesRouter from './public/images.js'
 import pagesRouter from './public/pages.js'
 import stripeWebhookRouter from './public/stripeWebhook.js'
 import kountPublicRouter from './public/kount.js'
+import kountWebhookRouter from './public/kountWebhook.js'
 
 // Admin routes
 import authRouter from './admin/auth.js'
@@ -65,6 +66,7 @@ export function registerRoutes(app) {
   app.route('/api', checkoutRouter) // /api/create-checkout-session, etc.
   app.route('/api', stripeWebhookRouter) // /api/stripe-webhook (signed)
   app.route('/api/kount', kountPublicRouter) // /api/kount/config (device collection)
+  app.route('/api', kountWebhookRouter) // /api/kount-webhook (signed, Kount portal decisions)
   app.route('/api/image-proxy', imageProxyRouter)
   app.route('/api/store-settings', storeSettingsRouter)
   app.route('/api/contact-email', contactEmailRouter)

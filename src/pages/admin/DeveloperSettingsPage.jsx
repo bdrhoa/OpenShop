@@ -14,6 +14,8 @@ import { AdminPageHeader } from '../../components/admin/AdminPageHeader'
  */
 export function DeveloperSettingsPage() {
   const [fields, setFields] = useState(null)
+  const [endpoints, setEndpoints] = useState([])
+  const [copied, setCopied] = useState(null)
   const [drafts, setDrafts] = useState({})
   const [status, setStatus] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -28,6 +30,17 @@ export function DeveloperSettingsPage() {
     const data = await adminApiRequest('/api/admin/developer-settings')
     const body = await data.json()
     setFields(body.fields)
+    setEndpoints(body.endpoints || [])
+  }
+
+  async function copyUrl(endpoint) {
+    try {
+      await navigator.clipboard.writeText(endpoint.url)
+      setCopied(endpoint.key)
+      setTimeout(() => setCopied(null), 2000)
+    } catch {
+      // Clipboard blocked: the field is selectable, so it can be copied by hand.
+    }
   }
 
   useEffect(() => {
@@ -52,6 +65,7 @@ export function DeveloperSettingsPage() {
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body.error || `Save failed (${res.status})`)
       setFields(body.fields)
+      if (body.endpoints) setEndpoints(body.endpoints)
       setDrafts({})
       setStatus({ ok: 'Saved. Changes take effect immediately.' })
     } catch (err) {
@@ -197,6 +211,32 @@ export function DeveloperSettingsPage() {
           )
         })}
       </div>
+
+      {endpoints.length > 0 && (
+        <div className="mt-4 space-y-4">
+          {endpoints.map((endpoint) => (
+            <div key={endpoint.key}>
+              <label htmlFor={`ds-${endpoint.key}`} className="block text-sm font-medium text-[var(--os-color-text)]">
+                {endpoint.label}
+              </label>
+              <div className="mt-1 flex gap-2">
+                <Input
+                  id={`ds-${endpoint.key}`}
+                  type="text"
+                  value={endpoint.url}
+                  readOnly
+                  onFocus={(e) => e.target.select()}
+                  className="font-mono text-xs"
+                />
+                <Button type="button" variant="outline" size="sm" onClick={() => copyUrl(endpoint)}>
+                  {copied === endpoint.key ? 'Copied' : 'Copy'}
+                </Button>
+              </div>
+              <p className="mt-1 text-xs text-[var(--admin-text-muted)]">Read-only. Based on the Site URL.</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {status?.error && (
         <p role="alert" className="mt-4 text-sm text-[var(--admin-error)]">{status.error}</p>

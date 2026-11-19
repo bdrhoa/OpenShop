@@ -17,6 +17,7 @@ import {
 import { createMockEnv, createMockKV } from '../setup.js'
 import { clearKountTokenCache } from '../../src/services/KountClient.js'
 import { SESSION, CHARGE, LINE_ITEMS } from '../unit/kount/fixtures.js'
+import { createSigner, SAMPLE_EVENT } from '../unit/kount/webhookSigner.js'
 
 const stripeMocks = vi.hoisted(() => ({
   checkout: { sessions: { create: null, retrieve: null, listLineItems: null, list: null } },
@@ -308,6 +309,101 @@ describe('Kount integration', () => {
       await put({ KOUNT_ENVIRONMENT: '' })
       config = await parseJsonResponse(await executeRequest(app, createTestRequest('/api/kount/config'), env))
       expect(config.environment).toBe('TEST')
+    })
+  })
+
+  describe('POST /api/kount-webhook', () => {
+    let signer
+    beforeEach(async () => {
+      signer = signer || await createSigner()
+      env.KOUNT_WEBHOOK_PUBLIC_KEY = signer.publicKeyBase64
+    })
+
+    async function kountDelivery(body, { timestamp = new Date().toISOString(), signWith = signer } = {}) {
+      const raw = JSON.stringify(body)
+      return createTestRequest('/api/kount-webhook', {
+        method: 'POST',
+        body: raw,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Event-Timestamp': timestamp,
+          'X-Event-Signature': await signWith.sign(timestamp, raw),
+        },
+      })
+    }
+
+    async function reviewOrder() {
+      vi.stubGlobal('fetch', kountFetch('REVIEW'))
+      const res = await executeRequest(app, await signedWebhook({ id: 'evt_r', type: 'checkout.session.completed', data: { object: SESSION } }), env)
+      expect(res.status).toBe(200)
+    }
+
+    it('returns 503 until the public key is configured', async () => {
+      delete env.KOUNT_WEBHOOK_PUBLIC_KEY
+      const res = await executeRequest(app, await kountDelivery(SAMPLE_EVENT), env)
+      expect(res.status).toBe(503)
+    })
+
+    it('rejects a bad signature (401) and a stale timestamp (400)', async () => {
+      const other = await createSigner()
+      expect((await executeRequest(app, await kountDelivery(SAMPLE_EVENT, { signWith: other }), env)).status).toBe(401)
+      const stale = new Date(Date.now() - 50 * 60 * 1000).toISOString()
+      expect((await executeRequest(app, await kountDelivery(SAMPLE_EVENT, { timestamp: stale }), env)).status).toBe(400)
+    })
+
+    it('a portal APPROVE captures a REVIEW order and unblocks fulfillment', async () => {
+      await reviewOrder()
+      const res = await executeRequest(app, await kountDelivery({ ...SAMPLE_EVENT, id: 'evt-portal-1', kountOrderId: 'K1', merchantOrderId: 'order-1', newValue: 'APPROVE' }), env)
+      expect(res.status).toBe(200)
+      expect((await parseJsonResponse(res)).outcome).toBe('approved')
+      expect(stripeMocks.paymentIntents.capture).toHaveBeenCalledTimes(1)
+
+      // The status update went to Kount without echoing the decision back.
+      const patch = fetch.mock.calls.find(([u, init]) => String(u).endsWith('/commerce/v2/orders/K1') && init.method === 'PATCH')
+      const sent = JSON.parse(patch[1].body)
+      expect(sent.transactions[0].transactionStatus).toBe('CAPTURED')
+      expect(sent).not.toHaveProperty('riskInquiry')
+
+      const adminToken = await createAdminToken(env, kv)
+      const fulfill = await executeRequest(app, createTestRequest(`/api/admin/analytics/orders/${SESSION.id}/fulfill`, { method: 'POST', headers: createAdminHeaders(adminToken) }), env)
+      expect(fulfill.status).toBe(200)
+    })
+
+    it('acknowledges events for unknown orders without side effects', async () => {
+      const res = await executeRequest(app, await kountDelivery(SAMPLE_EVENT), env)
+      expect(res.status).toBe(200)
+      expect((await parseJsonResponse(res)).outcome).toBe('unknown_order')
+      expect(stripeMocks.paymentIntents.cancel).not.toHaveBeenCalled()
+    })
+
+    it('returns 500 when the payment step fails so Kount retries', async () => {
+      await reviewOrder()
+      stripeMocks.paymentIntents.cancel.mockRejectedValueOnce(new Error('stripe down'))
+      const body = { ...SAMPLE_EVENT, id: 'evt-portal-2', kountOrderId: 'K1', merchantOrderId: 'order-1', newValue: 'DECLINE' }
+      expect((await executeRequest(app, await kountDelivery(body), env)).status).toBe(500)
+      const retry = await executeRequest(app, await kountDelivery(body), env)
+      expect((await parseJsonResponse(retry)).outcome).toBe('declined')
+      expect(stripeMocks.paymentIntents.cancel).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  describe('read-only webhook URLs in Developer Settings', () => {
+    it('shows the Kount and Stripe webhook URLs from the Site URL, and validates the public key', async () => {
+      const adminToken = await createAdminToken(env, kv)
+      const res = await executeRequest(app, createTestRequest('/api/admin/developer-settings', { headers: createAdminHeaders(adminToken) }), env)
+      const body = await parseJsonResponse(res)
+      expect(body.endpoints).toEqual([
+        expect.objectContaining({ key: 'KOUNT_WEBHOOK_URL', url: 'https://test.workers.dev/api/kount-webhook' }),
+        expect.objectContaining({ key: 'STRIPE_WEBHOOK_URL', url: 'https://test.workers.dev/api/stripe-webhook' }),
+      ])
+      expect(body.fields.map((f) => f.key)).not.toContain('KOUNT_WEBHOOK_URL') // display-only, not a setting
+
+      const bad = await executeRequest(app, createTestRequest('/api/admin/developer-settings', {
+        method: 'PUT',
+        headers: createAdminHeaders(adminToken),
+        body: JSON.stringify({ KOUNT_WEBHOOK_PUBLIC_KEY: 'not a key!' }),
+      }), env)
+      expect(bad.status).toBe(400)
     })
   })
 })

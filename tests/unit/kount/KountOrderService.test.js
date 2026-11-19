@@ -336,3 +336,69 @@ describe('reporting recovery', () => {
     expect(client.sendDataOnlyOrder).toHaveBeenCalledTimes(REPORTING_MAX_ATTEMPTS)
   })
 })
+
+describe('Kount portal decisions (webhook events)', () => {
+  async function reviewOrder() {
+    const stripe = fakeStripe()
+    const client = fakeClient(KOUNT_REVIEW)
+    const svc = service(stripe, client)
+    await svc.handleCheckoutCompleted(SESSION)
+    return { stripe, client, svc }
+  }
+  const event = (decision, extra = {}) => ({ eventId: `evt-${decision}`, eventType: 'Order.StatusChange', kountOrderId: 'K1', merchantOrderId: 'order-1', decision, ...extra })
+
+  it('a portal DECLINE releases the authorization and is not echoed back to Kount', async () => {
+    const { stripe, client, svc } = await reviewOrder()
+    const result = await svc.handleKountWebhookEvent(event('DECLINE'))
+    expect(result.outcome).toBe('declined')
+    expect(stripe.paymentIntents.cancel).toHaveBeenCalledTimes(1)
+    const stored = await svc.getRecord(SESSION.id)
+    expect(stored.review).toEqual(expect.objectContaining({ status: 'declined', decidedBy: 'kount', reportDecision: false }))
+    expect(stored.fulfillmentAllowed).toBe(false)
+    // Status is still reported; the decision itself is not sent back.
+    expect(client.updateOrder).toHaveBeenCalledWith('K1', { merchantOrderId: 'order-1', transactions: [{ transactionId: 'K1#0', transactionStatus: 'CANCELED' }] })
+  })
+
+  it('a portal APPROVE captures and allows fulfillment', async () => {
+    const { stripe, svc } = await reviewOrder()
+    expect((await svc.handleKountWebhookEvent(event('APPROVE'))).outcome).toBe('approved')
+    expect(stripe.paymentIntents.capture).toHaveBeenCalledTimes(1)
+    expect((await svc.isFulfillmentAllowed(SESSION.id)).allowed).toBe(true)
+  })
+
+  it('finds the order by merchantOrderId when the Kount order id is unknown', async () => {
+    const { svc } = await reviewOrder()
+    expect((await svc.handleKountWebhookEvent(event('APPROVE', { kountOrderId: 'OTHER' }))).outcome).toBe('approved')
+  })
+
+  it('ignores duplicates, non-decision events, unknown orders and orders not in review', async () => {
+    const { stripe, svc } = await reviewOrder()
+    await svc.handleKountWebhookEvent(event('APPROVE'))
+    expect((await svc.handleKountWebhookEvent(event('APPROVE'))).outcome).toBe('duplicate')
+    expect((await svc.handleKountWebhookEvent(event('DECLINE', { eventId: 'evt-late' }))).outcome).toBe('already_resolved')
+    expect((await svc.handleKountWebhookEvent(event(null, { eventId: 'evt-x' }))).outcome).toBe('ignored_event')
+    expect((await svc.handleKountWebhookEvent(event('APPROVE', { eventId: 'evt-y', kountOrderId: 'NOPE', merchantOrderId: 'nope' }))).outcome).toBe('unknown_order')
+    expect(stripe.paymentIntents.capture).toHaveBeenCalledTimes(1)
+    expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled()
+
+    kv = createMockKV()
+    const approved = service(fakeStripe(), fakeClient(KOUNT_APPROVE))
+    await approved.handleCheckoutCompleted(SESSION)
+    expect((await approved.handleKountWebhookEvent(event('DECLINE', { eventId: 'evt-z' }))).outcome).toBe('not_in_review')
+  })
+
+  it('does not mark the event handled when the payment side effect fails, so a retry applies it', async () => {
+    const { stripe, svc } = await reviewOrder()
+    stripe.paymentIntents.capture.mockRejectedValueOnce(new Error('stripe down'))
+    await expect(svc.handleKountWebhookEvent(event('APPROVE'))).rejects.toThrow('stripe down')
+    // The reviewer decision was persisted first; the redelivery resumes it.
+    expect((await svc.handleKountWebhookEvent(event('APPROVE'))).outcome).toBe('approved')
+    expect((await svc.getRecord(SESSION.id)).payment.state).toBe('captured')
+  })
+
+  it('an admin approval in OpenShop still reports the reviewer decision to Kount', async () => {
+    const { client, svc } = await reviewOrder()
+    await svc.resolveReview(SESSION.id, 'APPROVE')
+    expect(client.updateOrder.mock.calls.at(-1)[1].riskInquiry).toEqual({ decision: 'APPROVE' })
+  })
+})

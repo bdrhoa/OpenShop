@@ -26,6 +26,7 @@ These endpoints handle payment processing and checkout flows.
 | `/api/create-cart-checkout-session` | `POST` | Multi-item cart checkout | None |
 | `/api/checkout-session/:id` | `GET` | Buyer-safe session summary; `order_status` for Kount-held orders | None |
 | `/api/stripe-webhook` | `POST` | Stripe events → Kount evaluation, capture/cancel ([KOUNT.md](./KOUNT.md)) | Stripe signature |
+| `/api/kount-webhook` | `POST` | Kount portal review decisions → capture/release ([KOUNT.md](./KOUNT.md#kount-webhook)) | Kount signature |
 | `/api/kount/config` | `GET` | Device data collection config (`enabled`, `clientId`, `environment`) | None |
 | `/api/image-proxy?src=<url>` | `GET` | Proxy for Google Drive raster images (JPEG/PNG/WebP/GIF/AVIF only) | None |
 

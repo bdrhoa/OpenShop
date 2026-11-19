@@ -100,6 +100,8 @@ See [KOUNT.md](../KOUNT.md).
 | `kount:checkout:{openshopOrderId}` | `{ deviceSessionId, userIp, createdAt }` saved at checkout (TTL 8 days) |
 | `kount:order:{checkoutSessionId}` | Decision record: `evaluation` (decision, decisionSource, fallbackReason, attempts, correlationId, kountOrderId), `payment.state`, `review`, `fulfillmentAllowed`, `reporting[]` |
 | `kount:pi:{paymentIntentId}` | Checkout session ID (index) |
+| `kount:korder:{kountOrderId}`, `kount:morder:{openshopOrderId}` | Checkout session ID (indexes for Kount webhooks) |
+| `kount:whevent:{eventId}` | Handled Kount webhook event, `{ outcome, at }` (TTL 7 days) |
 | `kount:attempt:{chargeId}` | Job ID of the data-only report for a refused attempt (dedupe) |
 | `kount:job:{id}` | Reporting job (`update_order` / `data_only_order`), state `pending\|unknown\|confirmed\|rejected\|escalated` |
 | `kount:jobq:{id}` | Present while a job still needs work (scanned by the cron trigger) |

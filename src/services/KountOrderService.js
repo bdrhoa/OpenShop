@@ -30,6 +30,9 @@ export const KOUNT_KV = {
   ORDER_PREFIX: 'kount:order:', // checkout session id -> order record
   PI_INDEX_PREFIX: 'kount:pi:', // payment intent id -> checkout session id
   ATTEMPT_PREFIX: 'kount:attempt:', // charge id -> failed-attempt job id
+  KOUNT_ORDER_INDEX_PREFIX: 'kount:korder:', // Kount order id -> checkout session id
+  MERCHANT_ORDER_INDEX_PREFIX: 'kount:morder:', // OpenShop order id -> checkout session id
+  WEBHOOK_EVENT_PREFIX: 'kount:whevent:', // Kount webhook event id -> handled marker
   JOB_PREFIX: 'kount:job:', // job id -> reporting job
   QUEUE_PREFIX: 'kount:jobq:', // marker while a job still needs work
 }
@@ -221,6 +224,7 @@ export class KountOrderService {
       }
       // Persist the decision before any payment side effect.
       await this.saveRecord(record)
+      await this.indexRecord(record)
     }
 
     await this.applyDecision(record, paymentIntent)
@@ -268,7 +272,7 @@ export class KountOrderService {
     if (pi.status === 'succeeded') {
       if (record.payment.state !== 'captured') {
         record.payment = { state: 'captured', capturedAt: nowIso() }
-        await this.queueReport(record, { transactionStatus: 'CAPTURED', decision: record.review?.status === 'approved' ? 'APPROVE' : undefined })
+        await this.queueReport(record, { transactionStatus: 'CAPTURED', decision: this.reviewDecisionToReport(record, 'approved', 'APPROVE') })
       }
       record.fulfillmentAllowed = true
     } else if (pi.status === 'canceled') {
@@ -285,7 +289,7 @@ export class KountOrderService {
     record.fulfillmentAllowed = false
     if (pi.status === 'canceled' && !['canceled', 'expired'].includes(record.payment.state)) {
       record.payment = { state: 'canceled', canceledAt: nowIso() }
-      await this.queueReport(record, { transactionStatus: 'CANCELED', decision: record.review?.status === 'declined' ? 'DECLINE' : undefined })
+      await this.queueReport(record, { transactionStatus: 'CANCELED', decision: this.reviewDecisionToReport(record, 'declined', 'DECLINE') })
     } else if (pi.status === 'succeeded') {
       // Captured outside this flow; a refund must be issued in Stripe.
       record.payment = { ...record.payment, state: 'captured', note: 'captured before decline; refund required' }
@@ -294,6 +298,8 @@ export class KountOrderService {
   }
 
   async markAuthorizationGone(record, pi) {
+    // Already recorded: never queue a second CANCELED / EXPIRED report.
+    if (['canceled', 'expired'].includes(record.payment?.state)) return
     const expired = pi.cancellation_reason === 'automatic'
     record.payment = { state: expired ? 'expired' : 'canceled', canceledAt: nowIso(), cancellationReason: pi.cancellation_reason || null }
     record.fulfillmentAllowed = false
@@ -314,14 +320,20 @@ export class KountOrderService {
   // ------------------------------------------------------------------ review
 
   /** Reviewer decision on a REVIEW order: APPROVE captures, DECLINE releases. */
-  async resolveReview(sessionId, reviewerDecision, reviewer = 'admin') {
+  async resolveReview(sessionId, reviewerDecision, reviewer = 'admin', { reportDecision = true } = {}) {
     const record = await this.getRecord(sessionId)
     if (!record) return { error: 'not_found' }
     if (record.evaluation?.decision !== 'REVIEW') return { error: 'not_in_review' }
+    const wantedStatus = reviewerDecision === 'APPROVE' ? 'approved' : 'declined'
     if (record.review?.status && record.review.status !== 'open') {
-      return record.review.status === (reviewerDecision === 'APPROVE' ? 'approved' : 'declined')
-        ? { record } // repeated click: same outcome
-        : { error: 'already_resolved' }
+      if (record.review.status !== wantedStatus) return { error: 'already_resolved' }
+      // Same decision again (repeated click, or a retried webhook after a
+      // failed capture/cancel): re-apply it. capture() and cancel() are
+      // idempotent, so a completed payment step is not repeated.
+      const pi = await this.stripe.paymentIntents.retrieve(record.paymentIntentId)
+      await this.applyDecision(record, pi)
+      await this.flushOrderReporting(record)
+      return { record }
     }
 
     const pi = await this.stripe.paymentIntents.retrieve(record.paymentIntentId)
@@ -333,11 +345,74 @@ export class KountOrderService {
     }
 
     // Persist the reviewer decision before the payment side effect.
-    record.review = { ...record.review, status: reviewerDecision === 'APPROVE' ? 'approved' : 'declined', decidedAt: nowIso(), decidedBy: reviewer }
+    record.review = { ...record.review, status: reviewerDecision === 'APPROVE' ? 'approved' : 'declined', decidedAt: nowIso(), decidedBy: reviewer, reportDecision }
     await this.saveRecord(record)
     await this.applyDecision(record, pi)
     await this.flushOrderReporting(record)
     return { record }
+  }
+
+  /**
+   * The reviewer decision to send to Kount with the status update. A decision
+   * that came from Kount (portal webhook) is not echoed back.
+   */
+  reviewDecisionToReport(record, status, decision) {
+    if (record.review?.status !== status) return undefined
+    return record.review.reportDecision === false ? undefined : decision
+  }
+
+  /** Index a record by Kount and OpenShop order ids, for Kount webhooks. */
+  async indexRecord(record) {
+    if (record.evaluation?.kountOrderId) {
+      await this.kv.put(`${KOUNT_KV.KOUNT_ORDER_INDEX_PREFIX}${record.evaluation.kountOrderId}`, record.checkoutSessionId)
+    }
+    if (record.merchantOrderId) {
+      await this.kv.put(`${KOUNT_KV.MERCHANT_ORDER_INDEX_PREFIX}${record.merchantOrderId}`, record.checkoutSessionId)
+    }
+  }
+
+  async findSessionIdForKountEvent({ kountOrderId, merchantOrderId }) {
+    if (kountOrderId) {
+      const id = await this.kv.get(`${KOUNT_KV.KOUNT_ORDER_INDEX_PREFIX}${kountOrderId}`)
+      if (id) return id
+    }
+    if (merchantOrderId) {
+      return this.kv.get(`${KOUNT_KV.MERCHANT_ORDER_INDEX_PREFIX}${merchantOrderId}`)
+    }
+    return null
+  }
+
+  // ------------------------------------------------------- Kount webhooks
+
+  /**
+   * Apply a verified Kount webhook event: a reviewer's APPROVE / DECLINE made
+   * in the Kount portal resolves an open REVIEW the same way the admin
+   * buttons do (capture, or release the authorization). Returns an outcome
+   * for the response; throws only for failures Kount should retry (for
+   * example a Stripe error), so the event is not marked handled.
+   *
+   * @param {ReturnType<import('../lib/kountWebhook.js').parseKountWebhookEvent>} event
+   */
+  async handleKountWebhookEvent(event) {
+    const markerKey = event.eventId ? `${KOUNT_KV.WEBHOOK_EVENT_PREFIX}${event.eventId}` : null
+    if (markerKey && await this.kv.get(markerKey)) return { outcome: 'duplicate' }
+
+    const finish = async (outcome, extra = {}) => {
+      if (markerKey) await this.kv.put(markerKey, JSON.stringify({ outcome, at: nowIso() }), { expirationTtl: 7 * 24 * 3600 })
+      return { outcome, ...extra }
+    }
+
+    if (!event.decision) return finish('ignored_event')
+
+    const sessionId = await this.findSessionIdForKountEvent(event)
+    if (!sessionId) return finish('unknown_order')
+
+    const result = await this.resolveReview(sessionId, event.decision, 'kount', { reportDecision: false })
+    if (result.error === 'not_in_review') return finish('not_in_review')
+    if (result.error === 'already_resolved') return finish('already_resolved')
+    if (result.error === 'authorization_gone') return finish('authorization_gone')
+    if (result.error) return finish(result.error)
+    return finish(event.decision === 'APPROVE' ? 'approved' : 'declined', { sessionId })
   }
 
   // ---------------------------------------------------- failed auth attempts

@@ -20,6 +20,24 @@ import {
 
 const router = new Hono()
 
+/**
+ * Webhook URLs to register with Kount and Stripe. Display-only: derived from
+ * SITE_URL (or the request origin when it is not set), never stored.
+ */
+async function webhookEndpoints(c) {
+  const siteUrl = await resolveSetting(getKVNamespace(c.env), c.env, 'SITE_URL')
+  let origin
+  try {
+    origin = new URL(siteUrl || c.req.url).origin
+  } catch {
+    origin = new URL(c.req.url).origin
+  }
+  return [
+    { key: 'KOUNT_WEBHOOK_URL', label: 'Kount webhook URL (register in the Kount portal)', group: 'kount', url: `${origin}/api/kount-webhook` },
+    { key: 'STRIPE_WEBHOOK_URL', label: 'Stripe webhook URL (register in the Stripe dashboard)', group: 'kount', url: `${origin}/api/stripe-webhook` },
+  ]
+}
+
 async function verifyCurrentAdminPassword(c, currentPassword) {
   if (!currentPassword || typeof currentPassword !== 'string') {
     throw new ValidationError('Current password is required')
@@ -51,7 +69,7 @@ async function verifyCurrentAdminPassword(c, currentPassword) {
 // set, and whether it came from settings or the environment.
 router.get('/', asyncHandler(async (c) => {
   const service = new DeveloperSettingsService(getKVNamespace(c.env))
-  return c.json({ fields: await service.getPublicView(c.env) })
+  return c.json({ fields: await service.getPublicView(c.env), endpoints: await webhookEndpoints(c) })
 }))
 
 // Update non-password settings. An empty string clears an override.
@@ -63,7 +81,7 @@ router.put('/', asyncHandler(async (c) => {
 
   const service = new DeveloperSettingsService(getKVNamespace(c.env))
   await service.update(updates)
-  return c.json({ fields: await service.getPublicView(c.env) })
+  return c.json({ fields: await service.getPublicView(c.env), endpoints: await webhookEndpoints(c) })
 }))
 
 // Change the admin password.

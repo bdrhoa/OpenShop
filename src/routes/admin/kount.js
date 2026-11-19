@@ -56,6 +56,7 @@ router.get('/status', asyncHandler(async (c) => {
     enabled: Boolean(config?.enabled),
     holdingCheckouts: shouldHoldForKount(config),
     webhookSecretConfigured: Boolean(config?.stripeWebhookSecret),
+    kountWebhookConfigured: Boolean(config?.webhookPublicKey),
     maxRetries: config?.maxRetries ?? null,
     fallbackDecision: config?.fallbackDecision ?? null,
     environment: config?.environment ?? null,

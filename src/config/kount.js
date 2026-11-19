@@ -5,6 +5,8 @@
 // defaults and validation. Invalid policy values are rejected with a clear
 // error instead of being silently replaced by a default.
 
+import { validatePublicKey } from '../lib/kountWebhook.js'
+
 export const KOUNT_TOKEN_SCOPE = 'k1_integration_api'
 
 // One switch selects the token server, API host and device-collection
@@ -65,6 +67,7 @@ export const KOUNT_SETTING_FIELDS = [
   { key: 'KOUNT_FALLBACK_DECISION', label: 'Kount fallback decision (APPROVE or DECLINE, default APPROVE)', secret: false },
   { key: 'KOUNT_CHANNEL', label: 'Kount channel (optional)', secret: false },
   { key: 'KOUNT_SHIPPING_METHOD', label: `Kount shipping method for shipped orders (${KOUNT_SHIPPING_METHODS.join(', ')}; blank = not sent)`, secret: false },
+  { key: 'KOUNT_WEBHOOK_PUBLIC_KEY', label: 'Kount webhook public key (base64 or PEM, from the Kount portal; enables portal review decisions)', secret: false },
   { key: 'STRIPE_WEBHOOK_SECRET', label: 'Stripe webhook signing secret', secret: true },
 ]
 
@@ -104,6 +107,8 @@ export function validateKountSetting(key, value) {
       return Object.hasOwn(KOUNT_ENVIRONMENTS, v)
         ? null
         : `KOUNT_ENVIRONMENT must be one of ${Object.keys(KOUNT_ENVIRONMENTS).join(', ')}`
+    case 'KOUNT_WEBHOOK_PUBLIC_KEY':
+      return validatePublicKey(v)
     case 'KOUNT_API_KEY':
       return /\s/.test(v) || /^basic\s/i.test(v)
         ? 'KOUNT_API_KEY must be the raw portal API key (no "Basic " prefix or whitespace)'
@@ -147,5 +152,6 @@ export function buildKountConfig(raw = {}) {
     apiBaseUrl: endpoints.apiBaseUrl,
     ddcEnvironment: endpoints.ddcEnvironment,
     stripeWebhookSecret: str('STRIPE_WEBHOOK_SECRET'),
+    webhookPublicKey: str('KOUNT_WEBHOOK_PUBLIC_KEY'),
   }
 }

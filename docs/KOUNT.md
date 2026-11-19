@@ -53,9 +53,19 @@ Stripe ──► POST /api/stripe-webhook  (signature verified)
 Fulfillment is enforced on the server: `POST /api/admin/analytics/orders/:id/fulfill`
 returns **409** for a held order until it is approved and captured.
 
-**REVIEW orders** are handled in **Admin → Fulfillment**: open the order and
-choose *Approve & capture* or *Decline & release*. The reviewer decision is sent
-to Kount with the transaction status. Stripe authorizations expire after about
+**REVIEW orders** can be decided in either place:
+
+- **OpenShop:** in **Admin → Fulfillment**, open the order and choose *Approve &
+  capture* or *Decline & release*. The reviewer decision is sent to Kount with
+  the transaction status.
+- **Kount portal:** when a reviewer changes the decision to APPROVE or DECLINE,
+  Kount calls the [Kount webhook](#kount-webhook). OpenShop captures or releases
+  the payment the same way. The transaction status is reported to Kount, but
+  the decision isn't sent back, because it came from Kount.
+
+Whichever decision arrives first wins. A conflicting decision afterwards is
+refused (`already_resolved`). Repeating the same decision is safe: if the
+capture or release failed the first time, the repeat completes it. Stripe authorizations expire after about
 7 days. An expired authorization cannot be captured: it is recorded as
 `expired`, reported as `EXPIRED`, and the approve action is refused.
 
@@ -99,6 +109,7 @@ and an invalid value is refused rather than silently replaced.
 | `KOUNT_CLIENT_ID` | no | — | Also used by browser DDC |
 | `KOUNT_API_KEY` | **yes** | — | Raw portal API key, sent as `Basic <key>` to the token endpoint |
 | `STRIPE_WEBHOOK_SECRET` | **yes** | — | Required. Without it checkouts are **not** held, because nothing would capture them |
+| `KOUNT_WEBHOOK_PUBLIC_KEY` | no | — | Kount portal public key (base64 DER, or PEM with or without line breaks). Enables `/api/kount-webhook` |
 | `KOUNT_MAX_RETRIES` | no | `2` | 0–3 extra attempts after the first, for every Kount API call |
 | `KOUNT_FALLBACK_DECISION` | no | `APPROVE` | `APPROVE` or `DECLINE`; used only when evaluation ends without a usable decision |
 | `KOUNT_CHANNEL` | no | — | Sent as `channel` when set |
@@ -116,6 +127,36 @@ Create an endpoint at `https://<site>/api/stripe-webhook` subscribed to:
 - `payment_intent.canceled`
 
 Put its signing secret in `STRIPE_WEBHOOK_SECRET`.
+
+### Kount webhook
+
+Register `https://<site>/api/kount-webhook` in the Kount portal for order
+decision or status changes, and put the portal's public key in
+`KOUNT_WEBHOOK_PUBLIC_KEY`. **Developer Settings** shows both webhook URLs
+(Kount and Stripe) read-only with a Copy button. They are built from the Site URL.
+
+How a delivery is handled:
+
+| Check | Result |
+|---|---|
+| No public key configured | `503` |
+| Missing `X-Event-Timestamp` / `X-Event-Signature`, empty or non-JSON body | `400` |
+| Timestamp older than 45 min (Kount's suggested window) or more than 5 min in the future | `400` |
+| Signature invalid. RSA-PSS / SHA-256, 32-byte salt, over the timestamp text followed by the raw body | `401` |
+| Status/decision changed to APPROVE or DECLINE on an open review | Capture or release, then `200` |
+| Same event ID again, unknown order, order not in review, other events | `200` (acknowledged, no action) |
+| Capture or release failed in Stripe | `500`, so Kount retries; the retry completes it |
+
+Orders are matched by `kountOrderId`, falling back to `merchantOrderId`. The
+expected shape follows Kount's sample event (`Order.StatusChange` with
+`fieldName: "status"`, `oldValue`, `newValue`). Kount's guide marks that event
+deprecated in favour of *Order Update*. The same fields are read from either,
+but the exact payload should be confirmed with a real Sandbox delivery.
+
+The public key is configured by hand. Some Kount reference code fetches it from
+a portal endpoint and refreshes it before `validUntil`, but that endpoint isn't
+in the integration guide, so OpenShop doesn't call it. When Kount rotates the
+key, paste the new one into Developer Settings.
 
 ### Cron trigger
 
@@ -209,8 +250,9 @@ rejects its own RFC 3339 examples.
 
 ## Known gaps and documented conflicts
 
-- **Kount webhooks** (decision changes made in the Kount portal) are not
-  consumed. Reviewers decide in OpenShop. `KOUNT_WEBHOOK_PUBLIC_KEY` is not used yet.
+- **Kount webhook payload:** built from Kount's sample `Order.StatusChange`
+  event and tested with locally signed deliveries. It hasn't yet been checked
+  against a real Sandbox delivery or the newer *Order Update* event.
 - **Refunds** after capture are not driven by Kount. REVIEW orders are never
   captured before a reviewer decides, so a declined review only needs the
   authorization released.
@@ -238,6 +280,8 @@ rejects its own RFC 3339 examples.
 | `src/services/KountClient.js` | Token cache, retry policy, fallback |
 | `src/services/KountOrderService.js` | Decision record, capture/cancel/review, reporting jobs, cron |
 | `src/routes/public/stripeWebhook.js` | Signed Stripe webhook |
+| `src/routes/public/kountWebhook.js` | Signed Kount webhook (portal review decisions) |
+| `src/lib/kountWebhook.js` | Kount signature verification and event parsing |
 | `src/routes/public/kount.js` | `GET /api/kount/config` for DDC |
 | `src/routes/admin/kount.js` | Status, review, job retry |
 | `src/components/admin/KountOrderStatus.jsx` | Fulfillment badge and review panel |

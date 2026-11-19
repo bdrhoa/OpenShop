@@ -144,7 +144,8 @@ Stripe webhook at `/api/stripe-webhook`. Optional: `KOUNT_MAX_RETRIES` (0–3, d
 `KOUNT_FALLBACK_DECISION` (`APPROVE`/`DECLINE`, default `APPROVE`), `KOUNT_CHANNEL`,
 `KOUNT_SHIPPING_METHOD` (`STANDARD`/`EXPRESS`/`SAME_DAY`/`NEXT_DAY`/`SECOND_DAY`),
 `KOUNT_ENVIRONMENT` (`SANDBOX` default, or `PRODUCTION`; selects the token server, API host and device collector together).
-All are editable in Developer Settings. Add a cron trigger for reporting retries. Full guide: [KOUNT.md](./KOUNT.md).
+For review decisions made in the Kount portal, set `KOUNT_WEBHOOK_PUBLIC_KEY` and register `/api/kount-webhook` in the portal.
+All are editable in Developer Settings, which also shows both webhook URLs read-only. Add a cron trigger for reporting retries. Full guide: [KOUNT.md](./KOUNT.md).
 
 ### AI Image Generation (OpenRouter)
 
