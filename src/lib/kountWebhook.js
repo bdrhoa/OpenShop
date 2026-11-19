@@ -139,6 +139,14 @@ export async function diagnoseKountSignature({ publicKey, signature, timestamp, 
     result.verifies.pss32_bodyOnly = await tryPss(32, rawBody)
     const pkcs = await crypto.subtle.importKey('spki', der, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify'])
     result.verifies.pkcs1_timestampBody = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', pkcs, sig, withTimestamp).catch(() => false)
+    for (const hash of ['SHA-384', 'SHA-512']) {
+      const tag = hash.replace('-', '').toLowerCase()
+      const pssH = await crypto.subtle.importKey('spki', der, { name: 'RSA-PSS', hash }, false, ['verify'])
+      const hashLen = hash === 'SHA-384' ? 48 : 64
+      result.verifies[`pss${hashLen}_${tag}_timestampBody`] = await crypto.subtle.verify({ name: 'RSA-PSS', saltLength: hashLen }, pssH, sig, withTimestamp).catch(() => false)
+      const pkcsH = await crypto.subtle.importKey('spki', der, { name: 'RSASSA-PKCS1-v1_5', hash }, false, ['verify'])
+      result.verifies[`pkcs1_${tag}_timestampBody`] = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', pkcsH, sig, withTimestamp).catch(() => false)
+    }
   } catch (error) {
     result.error = `import: ${error?.message || error}`
   }

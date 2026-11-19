@@ -238,3 +238,34 @@ describe('evaluateWithFallback', () => {
     expect((await client.evaluateWithFallback({})).fallbackReason).toBe('malformed_response')
   })
 })
+
+describe('fetchWebhookPublicKey', () => {
+  const KEY = 'MII' + 'A'.repeat(300)
+  const ensUrl = 'https://app-sandbox.kount.com/api/developer/ens/client/client/public-key'
+  const run = async (response) => {
+    clearKountTokenCache()
+    const t = makeTransport([response])
+    const { client } = makeClient(t)
+    const result = await client.fetchWebhookPublicKey().catch((e) => e)
+    return { result, url: t.orderCalls()[0]?.url }
+  }
+
+  it('reads the reference shape { publicKey, validUntil } from the Sandbox ENS URL', async () => {
+    const { result, url } = await run(json({ publicKey: KEY, validUntil: '2027-01-01T00:00:00Z' }))
+    expect(url).toBe(ensUrl)
+    expect(result).toEqual(expect.objectContaining({ publicKeys: [KEY], validUntil: '2027-01-01T00:00:00Z' }))
+  })
+
+  it('reads other likely shapes', async () => {
+    expect((await run(json({ data: { public_key: KEY } }))).result.publicKeys).toEqual([KEY])
+    expect((await run(json({ keys: [{ key: KEY }, { key: KEY + 'B' }] }))).result.publicKeys).toHaveLength(2)
+    expect((await run(json([{ publicKey: KEY }]))).result.publicKeys).toEqual([KEY])
+    expect((await run(new Response(`-----BEGIN PUBLIC KEY-----\n${KEY}\n-----END PUBLIC KEY-----`, { status: 200, headers: { 'content-type': 'text/plain' } }))).result.publicKeys).toHaveLength(1)
+  })
+
+  it('describes an unrecognised shape without exposing values', async () => {
+    const { result } = await run(json({ status: 'ok', certificate: { pem: 1 }, id: 7 }))
+    expect(result.kind).toBe('malformed')
+    expect(result.shape).toBe('json {status:string, certificate:object, id:number}')
+  })
+})

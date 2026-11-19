@@ -51,6 +51,61 @@ function correlationIdOf(response, body) {
   return response?.headers?.get?.('x-correlation-id') || body?.correlationId || undefined
 }
 
+const KEY_FIELDS = ['publicKey', 'public_key', 'key', 'pem', 'value']
+
+function keysFrom(value) {
+  if (typeof value === 'string') return [value]
+  if (Array.isArray(value)) return value.flatMap(keysFrom)
+  if (value && typeof value === 'object') {
+    for (const field of KEY_FIELDS) {
+      if (typeof value[field] === 'string') return [value[field]]
+    }
+  }
+  return []
+}
+
+/**
+ * Pull public key(s) out of the ENS response. The reference implementation
+ * expects { publicKey, validUntil }; a live Sandbox response did not match
+ * that, so other likely shapes are accepted: the fields above at top level
+ * or under data / keys / publicKeys, an array of keys, or a bare PEM /
+ * base64 text body.
+ */
+function extractPublicKeys(res) {
+  const body = res.body
+  let keys = []
+  let validUntil = null
+  if (body && typeof body === 'object') {
+    for (const container of [body, body.data, body.result]) {
+      if (!container) continue
+      keys = keysFrom(container)
+      if (keys.length === 0) {
+        for (const listField of ['keys', 'publicKeys', 'public_keys', 'items']) {
+          keys = keysFrom(container[listField])
+          if (keys.length) break
+        }
+      }
+      if (keys.length) {
+        validUntil = container.validUntil || container.valid_until || container.expiresAt || null
+        break
+      }
+    }
+  } else if (typeof res.text === 'string' && /^[\sA-Za-z0-9+/=-]+$/.test(res.text) && res.text.replace(/\s|-----[^-]+-----/g, '').length > 100) {
+    keys = [res.text]
+  }
+  return { keys: keys.filter((k) => typeof k === 'string' && k.trim().length > 100), validUntil }
+}
+
+/** Describe a response's shape without logging any values. */
+function describeShape(res) {
+  const body = res.body
+  if (Array.isArray(body)) return `json array(${body.length})${body[0] && typeof body[0] === 'object' ? ` of {${Object.keys(body[0]).join(',')}}` : ''}`
+  if (body && typeof body === 'object') {
+    return `json {${Object.entries(body).map(([k, v]) => `${k}:${Array.isArray(v) ? `array(${v.length})` : typeof v}`).join(', ')}}`
+  }
+  return `${res.contentType || 'unknown type'}, text length ${String(res.text || '').length}`
+}
+
 export class KountClient {
   /**
    * @param {ReturnType<import('../config/kount.js').buildKountConfig>} config
@@ -186,8 +241,9 @@ export class KountClient {
 
       let parsed = null
       let jsonParsed = false
+      let text = ''
       try {
-        const text = await response.text()
+        text = await response.text()
         if (text) {
           parsed = JSON.parse(text)
           jsonParsed = true
@@ -198,7 +254,7 @@ export class KountClient {
       const correlationId = correlationIdOf(response, parsed)
 
       if (response.ok) {
-        return { status: response.status, body: parsed, jsonParsed, correlationId }
+        return { status: response.status, body: parsed, jsonParsed, correlationId, text, contentType: response.headers?.get?.('content-type') || null }
       }
 
       const status = response.status
@@ -267,10 +323,11 @@ export class KountClient {
   async fetchWebhookPublicKey() {
     const url = `${this.config.ensBaseUrl}/api/developer/ens/client/${encodeURIComponent(this.config.clientId)}/public-key`
     const res = await this.request('get_webhook_public_key', { method: 'GET', path: url })
-    if (!res.body?.publicKey) {
-      throw new KountApiError('Kount public key response had no publicKey', { kind: 'malformed', retryable: false })
+    const { keys, validUntil } = extractPublicKeys(res)
+    if (keys.length === 0) {
+      throw new KountApiError(`Kount public key response not recognised (${describeShape(res)})`, { kind: 'malformed', retryable: false, shape: describeShape(res) })
     }
-    return { publicKey: res.body.publicKey, validUntil: res.body.validUntil || null }
+    return { publicKeys: keys, publicKey: keys[0], validUntil }
   }
 
   evaluateOrder(payload) {

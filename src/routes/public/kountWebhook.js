@@ -29,14 +29,16 @@ async function logSignatureDiagnostics(config, { signature, timestamp, rawBody }
     let published
     if (config.enabled) {
       try {
-        const { publicKey, validUntil } = await new KountClient(config).fetchWebhookPublicKey()
+        const { publicKeys, validUntil } = await new KountClient(config).fetchWebhookPublicKey()
         published = {
-          ...(await diagnoseKountSignature({ publicKey, signature, timestamp, rawBody })),
           validUntil,
-          sameAsConfigured: (await keyFingerprint(publicKey)) === configured.fingerprint,
+          keys: await Promise.all(publicKeys.map(async (publicKey) => ({
+            ...(await diagnoseKountSignature({ publicKey, signature, timestamp, rawBody })),
+            sameAsConfigured: (await keyFingerprint(publicKey)) === configured.fingerprint,
+          }))),
         }
       } catch (error) {
-        published = { error: `${error.kind || 'error'}${error.status ? ` (${error.status})` : ''}` }
+        published = { error: `${error.kind || 'error'}${error.status ? ` (${error.status})` : ''}`, shape: error.shape }
       }
     } else {
       published = { error: 'kount_credentials_not_configured' }
