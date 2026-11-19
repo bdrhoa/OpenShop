@@ -13,7 +13,9 @@
 //     wrangler kv key delete developer:settings --namespace-id <id> --remote
 //
 import { KV_KEYS } from '../config/index.js'
+import { KOUNT_SETTING_FIELDS, validateKountSetting } from '../config/kount.js'
 import { randomHex } from '../utils/crypto.js'
+import { ValidationError } from '../utils/errors.js'
 
 /**
  * Settings that may be written from the admin UI.
@@ -29,6 +31,9 @@ export const DEVELOPER_SETTING_FIELDS = [
   { key: 'OPENROUTER_MODEL', label: 'OpenRouter model (agent)', secret: false },
   { key: 'SITE_URL', label: 'Site URL', secret: false },
   { key: 'ADMIN_PASSWORD', label: 'Admin password', secret: true, password: true },
+  // Fraud policy and payment-webhook settings. Never writable by the store
+  // agent: a prompt must not be able to change fraud policy.
+  ...KOUNT_SETTING_FIELDS.map((f) => ({ ...f, group: 'kount', agentWritable: false })),
 ]
 
 const FIELDS_BY_KEY = new Map(DEVELOPER_SETTING_FIELDS.map((f) => [f.key, f]))
@@ -78,6 +83,7 @@ export class DeveloperSettingsService {
         label: field.label,
         secret: Boolean(field.secret),
         isPassword: Boolean(field.password),
+        group: field.group || 'general',
         configured: inKv || inEnv,
         source: inKv ? 'settings' : (inEnv ? 'environment' : 'unset'),
         // Non-secret values are safe to show so they can be edited in place.
@@ -91,6 +97,15 @@ export class DeveloperSettingsService {
    * value — that is the documented way to undo a bad override.
    */
   async update(updates) {
+    // Same validation as the env path (config/kount.js), so a bad policy
+    // value is refused here instead of breaking the next checkout.
+    const errors = Object.entries(updates)
+      .map(([key, value]) => validateKountSetting(key, value))
+      .filter(Boolean)
+    if (errors.length > 0) {
+      throw new ValidationError(errors.join('; '))
+    }
+
     const stored = await this.getRaw()
 
     for (const [key, value] of Object.entries(updates)) {

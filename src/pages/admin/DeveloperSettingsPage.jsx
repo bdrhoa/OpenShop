@@ -49,7 +49,8 @@ export function DeveloperSettingsPage() {
         method: 'PUT',
         body: JSON.stringify(drafts),
       })
-      const body = await res.json()
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.error || `Save failed (${res.status})`)
       setFields(body.fields)
       setDrafts({})
       setStatus({ ok: 'Saved. Changes take effect immediately.' })
@@ -132,7 +133,8 @@ export function DeveloperSettingsPage() {
       />
 
       <div className="mt-5 space-y-4">
-        {editable.map((field) => {
+        {editable.map((field, index) => {
+          const startsKountGroup = field.group === 'kount' && editable[index - 1]?.group !== 'kount'
           const modelKeys = modelOptions ? MODEL_LISTS[field.key] : undefined
           const useSelect = Boolean(modelKeys) && (
             (modelOptions?.[modelKeys.list] || []).length > 0 ||
@@ -141,6 +143,16 @@ export function DeveloperSettingsPage() {
 
           return (
           <div key={field.key}>
+            {startsKountGroup && (
+              <div className="mb-4 pt-4 border-t border-[var(--admin-border-primary)]">
+                <h3 className="text-lg font-semibold text-[var(--admin-text-primary)]">Fraud screening (Kount)</h3>
+                <p className="mt-1 text-sm text-[var(--admin-text-secondary)]">
+                  Orders are held (authorized, not captured) and screened by Kount when the client ID, API key and
+                  Stripe webhook signing secret are all set. Blank fields use the Worker environment or the default.
+                  Retries and fallback apply from the next checkout.
+                </p>
+              </div>
+            )}
             <label
               htmlFor={`ds-${field.key}`}
               className="block text-sm font-medium text-[var(--os-color-text)]"

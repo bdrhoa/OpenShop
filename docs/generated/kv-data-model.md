@@ -91,6 +91,19 @@
 
 Only known root props are kept; unknown keys are dropped during sanitization (`validatePageData`).
 
+## Kount fraud screening
+
+See [KOUNT.md](../KOUNT.md).
+
+| Pattern | Value |
+|---------|--------|
+| `kount:checkout:{openshopOrderId}` | `{ deviceSessionId, userIp, createdAt }` saved at checkout (TTL 8 days) |
+| `kount:order:{checkoutSessionId}` | Decision record: `evaluation` (decision, decisionSource, fallbackReason, attempts, correlationId, kountOrderId), `payment.state`, `review`, `fulfillmentAllowed`, `reporting[]` |
+| `kount:pi:{paymentIntentId}` | Checkout session ID (index) |
+| `kount:attempt:{chargeId}` | Job ID of the data-only report for a refused attempt (dedupe) |
+| `kount:job:{id}` | Reporting job (`update_order` / `data_only_order`), state `pending\|unknown\|confirmed\|rejected\|escalated` |
+| `kount:jobq:{id}` | Present while a job still needs work (scanned by the cron trigger) |
+
 ## Settings and auth
 
 Store settings and admin tokens may use additional keys via `src/services/StoreSettingsService.js` and auth middleware—grep `namespace.put` in `src/` when extending this doc.

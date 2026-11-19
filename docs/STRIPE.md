@@ -96,16 +96,22 @@ Webhooks allow you to track order completion and payment events in real-time.
 1. **Stripe Dashboard** → **Developers** → **Webhooks**
 2. **Add Endpoint**: `https://your-project.workers.dev/api/stripe-webhook`
 3. **Select Events**:
-   - `checkout.session.completed` - Fired when a checkout session is completed
-   - `payment_intent.succeeded` - Fired when a payment is successfully processed
+   - `checkout.session.completed` - evaluates held orders with Kount, then captures or releases
+   - `payment_intent.payment_failed` - reports refused attempts to Kount
+   - `payment_intent.canceled` - records expired or released authorizations
+4. Set the endpoint's signing secret as `STRIPE_WEBHOOK_SECRET` (env or Developer Settings).
+
+The endpoint is used by the Kount fraud-screening integration; see [KOUNT.md](./KOUNT.md).
 
 ### Webhook Security
 
-Stripe webhooks include a signature that verifies the request came from Stripe. OpenShop validates this signature to ensure webhook security.
+The handler (`src/routes/public/stripeWebhook.js`) verifies the `Stripe-Signature` header with
+`STRIPE_WEBHOOK_SECRET` using the SubtleCrypto provider. Requests with a missing or invalid
+signature are rejected (`400`). With no secret configured the endpoint returns `503`.
 
 ### Handling Webhook Events
 
-You can extend OpenShop to handle webhook events by modifying the webhook handler in `src/routes/public/checkout.js`. Common use cases:
+Extend `src/routes/public/stripeWebhook.js` for other events. Common use cases:
 
 - Update order status in your system
 - Send confirmation emails

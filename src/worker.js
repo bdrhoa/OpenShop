@@ -6,6 +6,8 @@ import { errorHandler } from './middleware/errorHandler.js'
 import { verifyAdminAuth, UNAUTHENTICATED_ADMIN_PATHS } from './middleware/auth.js'
 import { productLimitMiddleware } from './middleware/productLimit.js'
 import { registerRoutes } from './routes/index.js'
+import { runKountScheduledWork } from './services/KountOrderService.js'
+import { getKVNamespace } from './utils/kv.js'
 
 const app = new Hono()
 
@@ -130,4 +132,18 @@ app.get('*', async (c) => {
   }
 })
 
-export default app
+// Cron trigger: retries pending Kount reporting (status updates and
+// data-only orders). Configure with [triggers] crons in wrangler.toml.
+async function scheduled(_event, env, ctx) {
+  ctx.waitUntil(
+    runKountScheduledWork(getKVNamespace(env), env)
+      .then((result) => console.log('[Kount] scheduled reporting run', JSON.stringify(result)))
+      .catch((error) => console.error('[Kount] scheduled reporting run failed', error?.message || error)),
+  )
+}
+
+export default {
+  fetch: (request, env, ctx) => app.fetch(request, env, ctx),
+  scheduled,
+}
+export { app }

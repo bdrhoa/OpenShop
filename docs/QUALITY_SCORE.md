@@ -11,6 +11,7 @@ Graded snapshot for agent prioritization. Update when a domain materially improv
 | Checkout / Stripe | services + routes | B | Metadata key cap; webhook docs in STRIPE.md |
 | Admin auth | middleware + routes | A | Login rate-limit IP hardening, logout revocation, password-change session purge |
 | Store settings / theme | services + UI | B | Partial PUT merges; agent can write identity + theme |
+| Fraud screening (Kount) | config + lib + services + routes + UI | B | Mocked-transport retry/fallback tests, lifecycle + webhook integration tests; not yet verified live against Sandbox |
 | Analytics | services + admin UI | C | Perf tests exist; fewer integration tests |
 | Media / R2 / AI | services + routes | B | Agent generate-and-store + merch persist; optional Drive |
 | Store agent | routes + tools | B | Full admin write tools; secrets stay out of chat |

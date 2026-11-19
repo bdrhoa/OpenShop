@@ -5,6 +5,7 @@ import { StripeService } from '../../services/StripeService.js'
 import { getKVNamespace } from '../../utils/kv.js'
 import { asyncHandler } from '../../middleware/errorHandler.js'
 import { resolveSetting } from '../../services/DeveloperSettingsService.js'
+import { KountOrderService, summarizeRecord } from '../../services/KountOrderService.js'
 
 const router = new Hono()
 
@@ -45,6 +46,14 @@ router.get('/orders', asyncHandler(async (c) => {
     kvNamespace
   })
 
+  // Attach the Kount decision / review / payment state to held orders.
+  if (kvNamespace && Array.isArray(orders?.orders)) {
+    const kount = new KountOrderService({ kv: kvNamespace, stripe: null, config: null, client: null })
+    await Promise.all(orders.orders.map(async (order) => {
+      order.kount = summarizeRecord(await kount.getRecord(order.id).catch(() => null))
+    }))
+  }
+
   return c.json(orders)
 }))
 
@@ -55,6 +64,17 @@ router.post('/orders/:orderId/fulfill', asyncHandler(async (c) => {
   
   if (!kvNamespace) {
     throw new Error('KV namespace not available')
+  }
+
+  // Server-side gate: a held order may only be fulfilled once Kount (or a
+  // reviewer) approved it and the payment was captured.
+  const kount = new KountOrderService({ kv: kvNamespace, stripe: null, config: null, client: null })
+  const gate = await kount.isFulfillmentAllowed(orderId)
+  if (!gate.allowed) {
+    return c.json({
+      error: 'This order cannot be fulfilled until it is approved and the payment is captured.',
+      kount: summarizeRecord(gate.record),
+    }, 409)
   }
 
   const fulfillmentKey = `order_fulfillment:${orderId}`

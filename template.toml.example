@@ -19,6 +19,10 @@ GOOGLE_CLIENT_SECRET = "your-google-client-secret"
 GOOGLE_API_KEY = "your-google-api-key"
 GEMINI_API_KEY = "your-gemini-api-key"
 
+# Retries pending Kount reporting (docs/KOUNT.md)
+[triggers]
+crons = ["*/5 * * * *"]
+
 # Static assets (automatically creates ASSETS binding)
 [assets]
 directory = "dist"

@@ -5,6 +5,7 @@ import { formatCurrency } from '../../lib/utils'
 import { adminApiRequest } from '../../lib/auth'
 import { AdminPageHeader } from '../../components/admin/AdminPageHeader'
 import { X, ShoppingBag, Check } from 'lucide-react'
+import { KountBadge, KountOrderPanel } from '../../components/admin/KountOrderStatus'
 
 export function FulfillmentPage() {
   const [orders, setOrders] = useState([])
@@ -57,7 +58,10 @@ export function FulfillmentPage() {
       const res = await adminApiRequest(`/api/admin/analytics/orders/${orderId}/fulfill`, {
         method: 'POST',
       })
-      if (!res.ok) throw new Error('Failed to fulfill order')
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || 'Failed to fulfill order')
+      }
       await fetchOrders(direction, cursorNext || cursorPrev)
       setIsModalOpen(false)
       setSelectedOrder(null)
@@ -351,6 +355,7 @@ export function FulfillmentPage() {
                         >
                           {order.fulfillment?.fulfilled ? 'Fulfilled' : 'Open'}
                         </span>
+                        <KountBadge kount={order.kount} />
                         <span className="text-xs text-[var(--admin-text-muted)]">
                           {new Date(order.created * 1000).toLocaleString()}
                         </span>
@@ -549,9 +554,25 @@ export function FulfillmentPage() {
               </div>
             </div>
 
+            {selectedOrder.kount && (
+              <div className="px-5 pb-4">
+                <KountOrderPanel
+                  orderId={selectedOrder.id}
+                  kount={selectedOrder.kount}
+                  onChanged={(kount) => {
+                    const updated = { ...selectedOrder, kount }
+                    setSelectedOrder(updated)
+                    setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)))
+                  }}
+                />
+              </div>
+            )}
+
             <div className="p-5 border-t border-[var(--admin-border-primary)] flex justify-between items-center">
               {!selectedOrder.fulfillment?.fulfilled ? (
-                <div className="text-sm text-[var(--admin-text-secondary)]">This order is ready for fulfillment</div>
+                <div className="text-sm text-[var(--admin-text-secondary)]">
+                  {selectedOrder.kount && !selectedOrder.kount.fulfillmentAllowed ? 'Not ready: awaiting fraud approval' : 'This order is ready for fulfillment'}
+                </div>
               ) : (
                 <div className="inline-flex items-center gap-1 text-sm text-[var(--admin-success)] font-medium">
                   <Check className="h-4 w-4" />
@@ -567,7 +588,7 @@ export function FulfillmentPage() {
                     Print Label
                   </Button>
                 )}
-                {!selectedOrder.fulfillment?.fulfilled && (
+                {!selectedOrder.fulfillment?.fulfilled && (!selectedOrder.kount || selectedOrder.kount.fulfillmentAllowed) && (
                   <Button onClick={() => fulfillOrder(selectedOrder.id)} size="sm">
                     Fulfill Order
                   </Button>

@@ -234,7 +234,7 @@ export const TOOL_DEFINITIONS = [
 ]
 
 const AGENT_WRITABLE_DEV_KEYS = new Set(
-  DEVELOPER_SETTING_FIELDS.filter((field) => !field.secret).map((field) => field.key),
+  DEVELOPER_SETTING_FIELDS.filter((field) => !field.secret && field.agentWritable !== false).map((field) => field.key),
 )
 
 export function buildSystemPrompt({ hasReferences = false } = {}) {

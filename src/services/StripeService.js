@@ -57,15 +57,21 @@ function clipMeta(value) {
  * Cart checkout metadata that never exceeds Stripe's 50-key limit.
  * @param {Array<{name?: string, quantity?: number, selectedVariant?: {name?: string}, selectedVariant2?: {name?: string}}>} items
  */
-export function buildCartCheckoutMetadata(items) {
+export function buildCartCheckoutMetadata(items, { reservedKeys = 0 } = {}) {
   const list = Array.isArray(items) ? items : []
+  // 3 summary + 2 overflow keys, 3 keys per detailed item, minus keys the
+  // caller adds (e.g. the Kount hold markers).
+  const detailedLimit = Math.max(0, Math.min(
+    CART_METADATA_DETAILED_ITEM_LIMIT,
+    Math.floor((STRIPE_METADATA_KEY_LIMIT - 5 - reservedKeys) / 3),
+  ))
   const metadata = {
     order_type: 'cart_checkout',
     item_count: String(list.length),
     total_quantity: String(list.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0)),
   }
 
-  const detailed = list.slice(0, CART_METADATA_DETAILED_ITEM_LIMIT)
+  const detailed = list.slice(0, detailedLimit)
   detailed.forEach((item, index) => {
     metadata[`item_${index}_name`] = clipMeta(item.name || `Item ${index + 1}`)
     if (item.selectedVariant?.name) {
@@ -76,9 +82,9 @@ export function buildCartCheckoutMetadata(items) {
     }
   })
 
-  if (list.length > CART_METADATA_DETAILED_ITEM_LIMIT) {
+  if (list.length > detailedLimit) {
     metadata.metadata_truncated = 'true'
-    metadata.overflow_item_count = String(list.length - CART_METADATA_DETAILED_ITEM_LIMIT)
+    metadata.overflow_item_count = String(list.length - detailedLimit)
   }
 
   return metadata
@@ -217,10 +223,30 @@ export class StripeService {
   }
 
   /**
+   * Extra session params that put the payment on hold for Kount.
+   *
+   * capture_method=manual authorizes the card without capturing it, so the
+   * Kount decision (made from the checkout.session.completed webhook) can
+   * capture or release the authorization. The OpenShop order id is copied to
+   * both the session and the PaymentIntent so failed attempts and the final
+   * order share one merchantOrderId.
+   * @param {{merchantOrderId: string}|undefined} kountHold
+   */
+  holdParams(kountHold) {
+    if (!kountHold?.merchantOrderId) return {}
+    const metadata = { openshop_order_id: kountHold.merchantOrderId, kount_hold: 'true' }
+    return {
+      metadata,
+      payment_intent_data: { capture_method: 'manual', metadata },
+    }
+  }
+
+  /**
    * Create checkout session for single item
    */
-  async createCheckoutSession(priceId) {
+  async createCheckoutSession(priceId, { kountHold } = {}) {
     this.assertCheckoutAvailable()
+    const hold = this.holdParams(kountHold)
     return await this.stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{ price: priceId, quantity: 1 }],
@@ -231,14 +257,16 @@ export class StripeService {
       billing_address_collection: 'required',
       success_url: `${this.siteUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${this.siteUrl}/`,
+      ...hold,
     })
   }
 
   /**
    * Create checkout session for cart
    */
-  async createCartCheckoutSession(items) {
+  async createCartCheckoutSession(items, { kountHold } = {}) {
     this.assertCheckoutAvailable()
+    const hold = this.holdParams(kountHold)
     const lineItems = items.map(item => {
       // When using price IDs, you cannot set description, name, images, etc. directly
       // These must come from the price object itself
@@ -264,7 +292,11 @@ export class StripeService {
       billing_address_collection: 'required',
       success_url: `${this.siteUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${this.siteUrl}/`,
-      metadata: buildCartCheckoutMetadata(items),
+      metadata: {
+        ...buildCartCheckoutMetadata(items, { reservedKeys: Object.keys(hold.metadata || {}).length }),
+        ...(hold.metadata || {}),
+      },
+      ...(hold.payment_intent_data ? { payment_intent_data: hold.payment_intent_data } : {}),
     })
   }
 
@@ -280,8 +312,24 @@ export class StripeService {
       currency: session.currency,
       customer_email: session.customer_details?.email,
       payment_status: session.payment_status,
-      created: session.created
+      created: session.created,
+      held: session.metadata?.kount_hold === 'true',
     }
+  }
+
+  /**
+   * Verify a Stripe webhook signature and return the event.
+   * Uses the SubtleCrypto provider, which works in Workers.
+   */
+  async constructWebhookEvent(rawBody, signature, webhookSecret) {
+    this.assertCheckoutAvailable()
+    return await this.stripe.webhooks.constructEventAsync(
+      rawBody,
+      signature,
+      webhookSecret,
+      undefined,
+      Stripe.createSubtleCryptoProvider(),
+    )
   }
 
   /**

@@ -137,6 +137,14 @@ This URL is used for:
 
 ## Optional Features
 
+### Fraud Screening (Kount)
+
+Set `KOUNT_CLIENT_ID`, `KOUNT_API_KEY` (secret) and `STRIPE_WEBHOOK_SECRET` (secret), then point a
+Stripe webhook at `/api/stripe-webhook`. Optional: `KOUNT_MAX_RETRIES` (0–3, default 2),
+`KOUNT_FALLBACK_DECISION` (`APPROVE`/`DECLINE`, default `APPROVE`), `KOUNT_CHANNEL`,
+`KOUNT_DDC_ENVIRONMENT` (`TEST`/`PROD`), `KOUNT_TOKEN_URL`, `KOUNT_API_BASE_URL` (Sandbox by default).
+All are editable in Developer Settings. Add a cron trigger for reporting retries. Full guide: [KOUNT.md](./KOUNT.md).
+
 ### AI Image Generation (OpenRouter)
 
 To enable AI image generation in the admin:

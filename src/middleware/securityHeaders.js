@@ -3,12 +3,13 @@ import { IMAGE_PROXY_CSP } from '../config/index.js'
 
 const APP_CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com", // Stripe requires unsafe-inline
+  // Stripe requires unsafe-inline; *.kaptcha.com is the Kount device data collector.
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://tst.kaptcha.com https://ssl.kaptcha.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' data: https: blob:",
   "font-src 'self' data: https://fonts.gstatic.com",
-  "connect-src 'self' https://api.stripe.com https://*.stripe.com https://oauth2.googleapis.com https://www.googleapis.com",
-  "frame-src 'self' https://js.stripe.com https://hooks.stripe.com",
+  "connect-src 'self' https://api.stripe.com https://*.stripe.com https://oauth2.googleapis.com https://www.googleapis.com https://tst.kaptcha.com https://ssl.kaptcha.com",
+  "frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://tst.kaptcha.com https://ssl.kaptcha.com",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

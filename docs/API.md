@@ -24,7 +24,12 @@ These endpoints handle payment processing and checkout flows.
 |----------|--------|-------------|----------------|
 | `/api/create-checkout-session` | `POST` | Single item checkout | None |
 | `/api/create-cart-checkout-session` | `POST` | Multi-item cart checkout | None |
+| `/api/checkout-session/:id` | `GET` | Buyer-safe session summary; `order_status` for Kount-held orders | None |
+| `/api/stripe-webhook` | `POST` | Stripe events → Kount evaluation, capture/cancel ([KOUNT.md](./KOUNT.md)) | Stripe signature |
+| `/api/kount/config` | `GET` | Device data collection config (`enabled`, `clientId`, `environment`) | None |
 | `/api/image-proxy?src=<url>` | `GET` | Proxy for Google Drive raster images (JPEG/PNG/WebP/GIF/AVIF only) | None |
+
+Both checkout endpoints accept an optional `kountSessionId` (Kount device session ID). When Kount is configured, the session is created with `capture_method: manual`; see [KOUNT.md](./KOUNT.md).
 
 ## Admin Endpoints (Authenticated)
 
@@ -48,6 +53,11 @@ These endpoints require admin authentication via the `X-Admin-Token` header.
 | `/api/admin/drive/oauth/start` | `GET` | Begin Google Drive OAuth | Admin Token |
 | `/api/admin/drive/oauth/callback` | `GET` | Handle Drive OAuth callback | Admin Token |
 | `/api/admin/drive/upload` | `POST` | Upload image to Google Drive | Admin Token |
+| `/api/admin/analytics/orders/:id/fulfill` | `POST` | Mark fulfilled; `409` while a Kount-held order is unapproved or uncaptured | Admin Token |
+| `/api/admin/kount/status` | `GET` | Effective non-secret Kount config and reporting jobs needing work | Admin Token |
+| `/api/admin/kount/orders/:sessionId` | `GET` | Kount decision, payment and review state | Admin Token |
+| `/api/admin/kount/orders/:sessionId/review` | `POST` | `{ decision: "APPROVE" \| "DECLINE" }` — capture or release a REVIEW order | Admin Token |
+| `/api/admin/kount/jobs/:jobId/retry` | `POST` | Re-queue a failed Kount reporting job | Admin Token |
 | `/api/admin/developer-settings/password` | `PUT, DELETE` | Change or reset admin password (`currentPassword` required); revokes all sessions | Admin Token |
 
 ## Authentication
