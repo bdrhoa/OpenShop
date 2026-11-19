@@ -101,6 +101,50 @@ export async function verifyKountWebhook({ publicKey, signature, timestamp, rawB
   return true
 }
 
+/** Short SHA-256 fingerprint of a public key (DER), safe to log. */
+export async function keyFingerprint(publicKey) {
+  const digest = await crypto.subtle.digest('SHA-256', base64ToBytes(normalizePublicKey(publicKey)))
+  return Array.from(new Uint8Array(digest).slice(0, 8), (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+/**
+ * Diagnostics for a failed signature: which (if any) signing variant this key
+ * verifies. Distinguishes "wrong key" (nothing verifies) from "different
+ * signing scheme" (a non-standard variant verifies). Logs no secrets.
+ */
+export async function diagnoseKountSignature({ publicKey, signature, timestamp, rawBody }) {
+  const result = { fingerprint: null, modulusBits: null, verifies: {} }
+  let der
+  let sig
+  try {
+    der = base64ToBytes(normalizePublicKey(publicKey))
+    sig = base64ToBytes(String(signature || '').trim())
+    result.fingerprint = await keyFingerprint(publicKey)
+  } catch (error) {
+    result.error = `decode: ${error?.message || error}`
+    return result
+  }
+
+  const enc = new TextEncoder()
+  const withTimestamp = new Uint8Array([...enc.encode(timestamp || ''), ...rawBody])
+  try {
+    const pss = await crypto.subtle.importKey('spki', der, { name: 'RSA-PSS', hash: 'SHA-256' }, false, ['verify'])
+    const bits = pss.algorithm.modulusLength
+    result.modulusBits = bits
+    const maxSalt = Math.ceil((bits - 1) / 8) - 32 - 2
+    const tryPss = (saltLength, data) => crypto.subtle.verify({ name: 'RSA-PSS', saltLength }, pss, sig, data).catch(() => false)
+    result.verifies.pss32_timestampBody = await tryPss(32, withTimestamp)
+    result.verifies.pssMax_timestampBody = await tryPss(maxSalt, withTimestamp)
+    result.verifies.pss0_timestampBody = await tryPss(0, withTimestamp)
+    result.verifies.pss32_bodyOnly = await tryPss(32, rawBody)
+    const pkcs = await crypto.subtle.importKey('spki', der, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify'])
+    result.verifies.pkcs1_timestampBody = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', pkcs, sig, withTimestamp).catch(() => false)
+  } catch (error) {
+    result.error = `import: ${error?.message || error}`
+  }
+  return result
+}
+
 /**
  * True for Kount's portal connectivity test ("Webhook.TestPing"). Kount sends
  * it without X-Event-Signature / X-Event-Timestamp (observed on a live Sandbox

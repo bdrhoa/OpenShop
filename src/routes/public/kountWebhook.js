@@ -12,9 +12,40 @@ import { getKVNamespace } from '../../utils/kv.js'
 import { resolveSetting } from '../../services/DeveloperSettingsService.js'
 import { StripeService } from '../../services/StripeService.js'
 import { KountOrderService, resolveKountConfig } from '../../services/KountOrderService.js'
-import { KountWebhookError, isTestPing, parseKountWebhookEvent, tryParseJson, verifyKountWebhook } from '../../lib/kountWebhook.js'
+import { KountWebhookError, diagnoseKountSignature, isTestPing, keyFingerprint, parseKountWebhookEvent, tryParseJson, verifyKountWebhook } from '../../lib/kountWebhook.js'
+import { KountClient } from '../../services/KountClient.js'
 
 const router = new Hono()
+
+/**
+ * After a signature failure, log which key / signing variant would have
+ * verified it: the configured key, and Kount's currently published key
+ * (fetched with the Worker's Kount credentials). Fingerprints only; never key
+ * material or the request body. Diagnostic only: acceptance is unchanged.
+ */
+async function logSignatureDiagnostics(config, { signature, timestamp, rawBody }) {
+  try {
+    const configured = await diagnoseKountSignature({ publicKey: config.webhookPublicKey, signature, timestamp, rawBody })
+    let published
+    if (config.enabled) {
+      try {
+        const { publicKey, validUntil } = await new KountClient(config).fetchWebhookPublicKey()
+        published = {
+          ...(await diagnoseKountSignature({ publicKey, signature, timestamp, rawBody })),
+          validUntil,
+          sameAsConfigured: (await keyFingerprint(publicKey)) === configured.fingerprint,
+        }
+      } catch (error) {
+        published = { error: `${error.kind || 'error'}${error.status ? ` (${error.status})` : ''}` }
+      }
+    } else {
+      published = { error: 'kount_credentials_not_configured' }
+    }
+    console.warn(`[Kount] signature diagnostics ${JSON.stringify({ environment: config.environment, configured, published })}`)
+  } catch (error) {
+    console.warn(`[Kount] signature diagnostics failed: ${error?.message || error}`)
+  }
+}
 
 router.post('/kount-webhook', async (c) => {
   const kv = getKVNamespace(c.env)
@@ -65,6 +96,9 @@ router.post('/kount-webhook', async (c) => {
       const headerNames = [...c.req.raw.headers.keys()].filter((k) => !k.startsWith('cf-')).sort().join(', ')
       const eventType = tryParseJson(rawBody)?.eventType || 'unknown'
       console.warn(`[Kount] webhook rejected: ${error.code} (eventType ${eventType}; headers: ${headerNames})`)
+      if (error.code === 'invalid_signature') {
+        await logSignatureDiagnostics(config, { signature, timestamp, rawBody })
+      }
       return c.json({ error: error.message }, error.status)
     }
     throw error

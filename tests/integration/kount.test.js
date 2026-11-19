@@ -370,6 +370,29 @@ describe('Kount integration', () => {
       expect((await parseJsonResponse(res)).outcome).toBe('test_ping')
     })
 
+    it('on a bad signature, logs whether Kount\'s published key would verify it', async () => {
+      const kountKey = await createSigner()
+      vi.stubGlobal('fetch', vi.fn(async (url) => {
+        const u = String(url)
+        if (u.includes('/as/token')) return new Response(JSON.stringify({ access_token: 'tok', expires_in: 1200 }), { status: 200 })
+        if (u === 'https://app-sandbox.kount.com/api/developer/ens/client/client-123/public-key') {
+          return new Response(JSON.stringify({ publicKey: kountKey.publicKeyBase64, validUntil: '2027-01-01T00:00:00Z' }), { status: 200 })
+        }
+        throw new Error(`unexpected ${u}`)
+      }))
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      // Signed by Kount's real key, but a different key is configured.
+      const res = await executeRequest(app, await kountDelivery(SAMPLE_EVENT, { signWith: kountKey }), env)
+      expect(res.status).toBe(401)
+      const line = warn.mock.calls.map((c) => String(c[0])).find((m) => m.startsWith('[Kount] signature diagnostics'))
+      const diag = JSON.parse(line.slice('[Kount] signature diagnostics '.length))
+      expect(diag.configured.verifies.pss32_timestampBody).toBe(false)
+      expect(diag.published).toEqual(expect.objectContaining({ sameAsConfigured: false, validUntil: '2027-01-01T00:00:00Z' }))
+      expect(diag.published.verifies.pss32_timestampBody).toBe(true)
+      expect(line).not.toContain(kountKey.publicKeyBase64)
+      warn.mockRestore()
+    })
+
     it('rejects a bad signature (401) and a stale timestamp (400)', async () => {
       const other = await createSigner()
       expect((await executeRequest(app, await kountDelivery(SAMPLE_EVENT, { signWith: other }), env)).status).toBe(401)

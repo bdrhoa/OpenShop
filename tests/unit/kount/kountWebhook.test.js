@@ -3,6 +3,8 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import {
   KountWebhookError,
+  diagnoseKountSignature,
+  keyFingerprint,
   isTestPing,
   normalizePublicKey,
   parseKountWebhookEvent,
@@ -80,6 +82,26 @@ describe('verifyKountWebhook', () => {
 
   it('reports an unusable public key as a server error', async () => {
     await expectError(verify({ publicKey: 'MIIBnotakey' }), 500, 'bad_public_key')
+  })
+})
+
+describe('diagnoseKountSignature', () => {
+  const timestamp = '2026-11-19T19:39:09Z'
+  const body = JSON.stringify(SAMPLE_EVENT)
+  const raw = new TextEncoder().encode(body)
+
+  it('reports the standard variant verifying with the right key', async () => {
+    const d = await diagnoseKountSignature({ publicKey: signer.publicKeyBase64, signature: await signer.sign(timestamp, body), timestamp, rawBody: raw })
+    expect(d.modulusBits).toBe(2048)
+    expect(d.fingerprint).toBe(await keyFingerprint(signer.publicKeyPem))
+    expect(d.verifies.pss32_timestampBody).toBe(true)
+    expect(d.verifies.pss32_bodyOnly).toBe(false)
+  })
+
+  it('reports nothing verifying with the wrong key', async () => {
+    const d = await diagnoseKountSignature({ publicKey: otherSigner.publicKeyBase64, signature: await signer.sign(timestamp, body), timestamp, rawBody: raw })
+    expect(Object.values(d.verifies).some(Boolean)).toBe(false)
+    expect(d.fingerprint).not.toBe(await keyFingerprint(signer.publicKeyBase64))
   })
 })
 

@@ -18,12 +18,16 @@ export const KOUNT_ENVIRONMENTS = {
     tokenUrl: 'https://login-uat.equifax.com/as/token',
     apiBaseUrl: 'https://api-sandbox.kount.com',
     ddcEnvironment: 'TEST',
+    // Webhook public key service (Kount ENS). Not in the integration guide;
+    // taken from the k360pf reference implementation.
+    ensBaseUrl: 'https://app-sandbox.kount.com',
   },
   PRODUCTION: {
     label: 'Production',
     tokenUrl: 'https://login.equifax.com/as/token',
     apiBaseUrl: 'https://api.kount.com',
     ddcEnvironment: 'PROD',
+    ensBaseUrl: 'https://app.kount.com',
   },
 }
 export const KOUNT_DEFAULT_ENVIRONMENT = 'SANDBOX'
@@ -151,6 +155,7 @@ export function buildKountConfig(raw = {}) {
     tokenUrl: endpoints.tokenUrl,
     apiBaseUrl: endpoints.apiBaseUrl,
     ddcEnvironment: endpoints.ddcEnvironment,
+    ensBaseUrl: endpoints.ensBaseUrl,
     stripeWebhookSecret: str('STRIPE_WEBHOOK_SECRET'),
     webhookPublicKey: str('KOUNT_WEBHOOK_PUBLIC_KEY'),
   }

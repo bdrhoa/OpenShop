@@ -159,7 +159,7 @@ export class KountClient {
   async request(operation, { method, path, query, body }) {
     const started = this.now()
     const deadline = started + this.deadlineMs
-    const url = new URL(`${this.config.apiBaseUrl}${path}`)
+    const url = new URL(/^https:\/\//.test(path) ? path : `${this.config.apiBaseUrl}${path}`)
     for (const [k, v] of Object.entries(query || {})) url.searchParams.set(k, String(v))
 
     let attempts = 0
@@ -258,6 +258,19 @@ export class KountClient {
       if (!err.correlationId && lastError?.correlationId) err.correlationId = lastError.correlationId
       throw err
     }
+  }
+
+  /**
+   * Kount's currently published webhook public key (ENS), as used by the
+   * k360pf reference implementation. Returns { publicKey, validUntil }.
+   */
+  async fetchWebhookPublicKey() {
+    const url = `${this.config.ensBaseUrl}/api/developer/ens/client/${encodeURIComponent(this.config.clientId)}/public-key`
+    const res = await this.request('get_webhook_public_key', { method: 'GET', path: url })
+    if (!res.body?.publicKey) {
+      throw new KountApiError('Kount public key response had no publicKey', { kind: 'malformed', retryable: false })
+    }
+    return { publicKey: res.body.publicKey, validUntil: res.body.validUntil || null }
   }
 
   evaluateOrder(payload) {
