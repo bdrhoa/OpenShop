@@ -119,9 +119,14 @@ function paymentFromCharge(charge) {
   if (!card) return { type: 'NONE' }
   // Hosted Checkout never exposes the PAN. The card fingerprint is Stripe's
   // stable token for the card, which is what Kount's TOKEN type is for.
+  // Stripe returns the BIN (`iin`) and issuing bank (`issuer`) only on accounts
+  // where Stripe has enabled them; send them when present. See docs/KOUNT.md.
+  const iin = typeof card.iin === 'string' && /^\d{6,8}$/.test(card.iin) ? card.iin : undefined
   return {
     type: card.fingerprint ? 'TOKEN' : 'CREDIT_CARD',
     paymentToken: str(card.fingerprint),
+    bin: iin,
+    issuingOrganization: str(card.issuer),
     last4: str(card.last4, 4),
     cardBrand: str(card.brand),
     expirationMonth: Number.isInteger(card.exp_month) ? card.exp_month : undefined,

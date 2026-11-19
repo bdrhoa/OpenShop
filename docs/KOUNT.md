@@ -126,7 +126,11 @@ These are unverified against live Kount. Confirm them before production:
 - **Kount webhook payload.** The parser follows the k360pf reference (`eventType: Order.StatusChange`, `merchantOrderId`, `kountOrderId`, `newValue`). It also accepts `Order.*` events with `fieldName: status`. Confirm the shape with a real Sandbox delivery.
 - **Decision spelling.** Reviewer values `APPROVE`/`APPROVED` and `DECLINE`/`DECLINED` are all accepted, because the guide prose and the schema disagree.
 - **Timestamps.** `creationDateTime` and `authorizationStatus.dateTime` are omitted on purpose. The published schema pattern rejects its own RFC 3339 examples.
-- **Payment token.** Hosted Checkout never exposes the PAN or BIN. The order sends `payment.type=TOKEN` with Stripe's card fingerprint.
+- **Payment token and BIN.** Hosted Checkout never exposes the PAN. The order sends `payment.type=TOKEN` with Stripe's card fingerprint.
+  - **Where the BIN can come from:** Stripe's API has a card BIN field, `iin`, plus the issuing bank in `issuer`, on `charge.payment_method_details.card`. Stripe documents both as "for internal use only and not typically available in standard API requests", so they appear only on accounts where Stripe has enabled them.
+  - **When it is sent:** if `iin` is present (6–8 digits), the order sends it as `payment.bin`, and `issuer` as `payment.issuingOrganization`. Otherwise both are left out.
+  - **To check your account:** retrieve a test-mode Charge and look at `payment_method_details.card.iin`. If it is missing, ask Stripe support to enable it.
+  - **Where it does not come from:** Radar rules can match on `:card_bin:` but cannot return the value. Payment Records also document `iin`, but they only cover payments processed outside Stripe.
 - **Session-ID reuse** across separate risk inquiries in one browser session is not yet confirmed with Kount. The guide says to keep IDs unique for 30 days.
 - **KV locking** is best-effort, not transactional (see tech-debt TD-005).
 - `userIp` is sent only for IPv4, because the schema format is `ipv4`.

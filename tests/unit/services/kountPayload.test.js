@@ -69,6 +69,16 @@ describe('buildEvaluationOrder', () => {
     expect(order.fulfillment[0].shipping.amount).toBe('500')
   })
 
+  it('sends the BIN and issuer when Stripe returns them, and ignores a malformed BIN', () => {
+    const withIin = (iin) => ({
+      ...pi,
+      latest_charge: { ...pi.latest_charge, payment_method_details: { card: { ...pi.latest_charge.payment_method_details.card, iin, issuer: 'Test Bank' } } },
+    })
+    const payment = buildEvaluationOrder(session(), withIin('424242')).transactions[0].payment
+    expect(payment).toMatchObject({ type: 'TOKEN', bin: '424242', issuingOrganization: 'Test Bank', last4: '4242' })
+    expect(buildEvaluationOrder(session(), withIin('4242xx')).transactions[0].payment.bin).toBeUndefined()
+  })
+
   it('never sends timestamps and omits unknown data', () => {
     const order = buildEvaluationOrder(session({ metadata: { kount_hold: 'true' }, customer_details: null, collected_information: null }), { id: 'pi_1' })
     expect(JSON.stringify(order)).not.toMatch(/DateTime/)
