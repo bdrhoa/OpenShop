@@ -207,33 +207,33 @@ describe('Kount integration', () => {
   })
 
   describe('review and fulfillment gating', () => {
-    it('blocks fulfillment during REVIEW, and allows it after a reviewer approves', async () => {
+    it('puts a REVIEW order on hold: not fulfillable, shown under On hold, not under Open', async () => {
       vi.stubGlobal('fetch', kountFetch('REVIEW'))
+      stripeMocks.checkout.sessions.list = vi.fn(async () => ({ data: [{ id: SESSION.id, status: 'complete', payment_status: 'unpaid', created: 1, amount_total: 3000, currency: 'usd', customer_details: {} }], has_more: false }))
+      stripeMocks.checkout.sessions.listLineItems = vi.fn(async () => ({ data: [] }))
       const adminToken = await createAdminToken(env, kv)
       const event = { id: 'evt_rev', type: 'checkout.session.completed', data: { object: SESSION } }
       expect((await executeRequest(app, await signedWebhook(event), env)).status).toBe(200)
       expect(stripeMocks.paymentIntents.capture).not.toHaveBeenCalled()
 
-      const fulfill = () => executeRequest(app, createTestRequest(`/api/admin/analytics/orders/${SESSION.id}/fulfill`, { method: 'POST', headers: createAdminHeaders(adminToken) }), env)
-      expect((await fulfill()).status).toBe(409)
+      const fulfill = await executeRequest(app, createTestRequest(`/api/admin/analytics/orders/${SESSION.id}/fulfill`, { method: 'POST', headers: createAdminHeaders(adminToken) }), env)
+      expect(fulfill.status).toBe(409)
+      expect((await parseJsonResponse(fulfill)).error).toMatch(/on hold for Kount review/)
+
+      const list = async (status) => (await parseJsonResponse(await executeRequest(app, createTestRequest(`/api/admin/analytics/orders?status=${status}`, { headers: createAdminHeaders(adminToken) }), env))).orders.map((o) => o.id)
+      expect(await list('on_hold')).toEqual([SESSION.id])
+      expect(await list('open')).toEqual([])
 
       const buyer = await parseJsonResponse(await executeRequest(app, createTestRequest(`/api/checkout-session/${SESSION.id}`), env))
       expect(buyer.order_status).toBe('received')
       expect(buyer).not.toHaveProperty('held')
-
-      const review = await executeRequest(app, createTestRequest(`/api/admin/kount/orders/${SESSION.id}/review`, {
-        method: 'POST',
-        headers: createAdminHeaders(adminToken),
-        body: { decision: 'APPROVE' },
-      }), env)
-      expect(review.status).toBe(200)
-      expect(stripeMocks.paymentIntents.capture).toHaveBeenCalledTimes(1)
-      expect((await fulfill()).status).toBe(200)
     })
 
-    it('rejects review endpoints without admin auth', async () => {
-      const res = await executeRequest(app, createTestRequest(`/api/admin/kount/orders/${SESSION.id}/review`, { method: 'POST', body: { decision: 'APPROVE' } }), env)
-      expect(res.status).toBe(401)
+    it('OpenShop has no endpoint to decide a review', async () => {
+      const adminToken = await createAdminToken(env, kv)
+      const res = await executeRequest(app, createTestRequest(`/api/admin/kount/orders/${SESSION.id}/review`, { method: 'POST', headers: createAdminHeaders(adminToken), body: { decision: 'APPROVE' } }), env)
+      expect(res.status).toBe(404)
+      expect(stripeMocks.paymentIntents.capture).not.toHaveBeenCalled()
     })
   })
 

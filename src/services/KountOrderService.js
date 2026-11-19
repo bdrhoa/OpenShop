@@ -9,8 +9,10 @@
 //      payment side effect. Redelivered webhooks resume from that record and
 //      never re-evaluate or change the decision.
 //   4. APPROVE → capture; DECLINE → cancel the authorization;
-//      REVIEW → keep the authorization, block fulfillment until a reviewer
-//      approves (capture) or declines (cancel).
+//      REVIEW → keep the authorization and put the order ON HOLD; it cannot
+//      be fulfilled until a reviewer decides in the Kount portal and the
+//      signed Kount webhook is processed. The hold is never lifted from
+//      inside OpenShop. Kount APPROVE → capture; DECLINE → release.
 //   5. Status changes are reported to Kount with PATCH through durable
 //      reporting jobs (pending → confirmed / rejected / escalated), retried by
 //      the cron trigger, independent of further webhook deliveries.
@@ -77,6 +79,23 @@ function nowIso() {
   return new Date().toISOString()
 }
 
+/** True while a Kount review hold is open on the order. */
+export function isOnHold(record) {
+  return record?.hold?.status === 'on_hold'
+}
+
+/** Put the order on hold for Kount review. */
+function placeHold(record) {
+  record.hold = { status: 'on_hold', reason: 'kount_review', since: nowIso() }
+  record.fulfillmentAllowed = false
+}
+
+/** Lift a review hold, recording why. No-op when there is no open hold. */
+function releaseHold(record, outcome) {
+  if (!isOnHold(record)) return
+  record.hold = { ...record.hold, status: 'released', releasedAt: nowIso(), releasedBy: 'kount', outcome }
+}
+
 /** Buyer-facing status derived from the stored record. */
 export function buyerStatusOf(record) {
   if (!record) return null
@@ -101,6 +120,8 @@ export function summarizeRecord(record) {
     possibleDuplicate: Boolean(record.evaluation?.possibleDuplicate),
     paymentState: record.payment?.state || null,
     review: record.review || null,
+    hold: record.hold || null,
+    onHold: isOnHold(record),
     fulfillmentAllowed: Boolean(record.fulfillmentAllowed),
     buyerStatus: buyerStatusOf(record),
     reporting: record.reporting || [],
@@ -156,7 +177,7 @@ export class KountOrderService {
   async isFulfillmentAllowed(sessionId) {
     const record = await this.getRecord(sessionId)
     if (!record) return { allowed: true, record: null }
-    return { allowed: Boolean(record.fulfillmentAllowed), record }
+    return { allowed: Boolean(record.fulfillmentAllowed) && !isOnHold(record), onHold: isOnHold(record), record }
   }
 
   // ---------------------------------------------------------- webhook: paid
@@ -218,7 +239,13 @@ export class KountOrderService {
 
       const evaluation = await this.client.evaluateWithFallback(payload)
       record.evaluation = evaluation
-      if (evaluation.decision === 'REVIEW') record.review = { status: 'open', openedAt: nowIso() }
+      if (evaluation.decision === 'REVIEW') {
+        record.review = { status: 'open', openedAt: nowIso() }
+        placeHold(record)
+        if (!this.config.webhookPublicKey) {
+          console.warn(`[Kount] order ${record.merchantOrderId} is ON HOLD for review, but KOUNT_WEBHOOK_PUBLIC_KEY is not set; the Kount decision cannot be received`)
+        }
+      }
       if (evaluation.decisionSource === 'fallback') {
         console.warn(`[Kount] fallback ${evaluation.decision} for ${record.merchantOrderId}: ${evaluation.fallbackReason} after ${evaluation.attempts} attempt(s)${evaluation.correlationId ? ` (correlation ${evaluation.correlationId})` : ''}`)
       }
@@ -272,9 +299,10 @@ export class KountOrderService {
     if (pi.status === 'succeeded') {
       if (record.payment.state !== 'captured') {
         record.payment = { state: 'captured', capturedAt: nowIso() }
-        await this.queueReport(record, { transactionStatus: 'CAPTURED', decision: this.reviewDecisionToReport(record, 'approved', 'APPROVE') })
+        await this.queueReport(record, { transactionStatus: 'CAPTURED' })
       }
-      record.fulfillmentAllowed = true
+      // Captured, but still never fulfillable while a review hold is open.
+      record.fulfillmentAllowed = !isOnHold(record)
     } else if (pi.status === 'canceled') {
       await this.markAuthorizationGone(record, pi)
     }
@@ -289,7 +317,7 @@ export class KountOrderService {
     record.fulfillmentAllowed = false
     if (pi.status === 'canceled' && !['canceled', 'expired'].includes(record.payment.state)) {
       record.payment = { state: 'canceled', canceledAt: nowIso() }
-      await this.queueReport(record, { transactionStatus: 'CANCELED', decision: this.reviewDecisionToReport(record, 'declined', 'DECLINE') })
+      await this.queueReport(record, { transactionStatus: 'CANCELED' })
     } else if (pi.status === 'succeeded') {
       // Captured outside this flow; a refund must be issued in Stripe.
       record.payment = { ...record.payment, state: 'captured', note: 'captured before decline; refund required' }
@@ -304,6 +332,7 @@ export class KountOrderService {
     record.payment = { state: expired ? 'expired' : 'canceled', canceledAt: nowIso(), cancellationReason: pi.cancellation_reason || null }
     record.fulfillmentAllowed = false
     if (record.review?.status === 'open') record.review = { ...record.review, status: expired ? 'expired' : 'canceled' }
+    releaseHold(record, expired ? 'authorization_expired' : 'authorization_canceled')
     await this.queueReport(record, { transactionStatus: expired ? 'EXPIRED' : 'CANCELED' })
   }
 
@@ -319,8 +348,13 @@ export class KountOrderService {
 
   // ------------------------------------------------------------------ review
 
-  /** Reviewer decision on a REVIEW order: APPROVE captures, DECLINE releases. */
-  async resolveReview(sessionId, reviewerDecision, reviewer = 'admin', { reportDecision = true } = {}) {
+  /**
+   * Apply the Kount reviewer's decision to a REVIEW order: lift the hold,
+   * then APPROVE captures and DECLINE releases the authorization. Only called
+   * from the verified Kount webhook; OpenShop has no way to decide a review
+   * itself. The decision came from Kount, so it is not reported back.
+   */
+  async resolveReview(sessionId, reviewerDecision) {
     const record = await this.getRecord(sessionId)
     if (!record) return { error: 'not_found' }
     if (record.evaluation?.decision !== 'REVIEW') return { error: 'not_in_review' }
@@ -345,20 +379,12 @@ export class KountOrderService {
     }
 
     // Persist the reviewer decision before the payment side effect.
-    record.review = { ...record.review, status: reviewerDecision === 'APPROVE' ? 'approved' : 'declined', decidedAt: nowIso(), decidedBy: reviewer, reportDecision }
+    record.review = { ...record.review, status: wantedStatus, decidedAt: nowIso(), decidedBy: 'kount' }
+    releaseHold(record, wantedStatus)
     await this.saveRecord(record)
     await this.applyDecision(record, pi)
     await this.flushOrderReporting(record)
     return { record }
-  }
-
-  /**
-   * The reviewer decision to send to Kount with the status update. A decision
-   * that came from Kount (portal webhook) is not echoed back.
-   */
-  reviewDecisionToReport(record, status, decision) {
-    if (record.review?.status !== status) return undefined
-    return record.review.reportDecision === false ? undefined : decision
   }
 
   /** Index a record by Kount and OpenShop order ids, for Kount webhooks. */
@@ -407,7 +433,7 @@ export class KountOrderService {
     const sessionId = await this.findSessionIdForKountEvent(event)
     if (!sessionId) return finish('unknown_order')
 
-    const result = await this.resolveReview(sessionId, event.decision, 'kount', { reportDecision: false })
+    const result = await this.resolveReview(sessionId, event.decision)
     if (result.error === 'not_in_review') return finish('not_in_review')
     if (result.error === 'already_resolved') return finish('already_resolved')
     if (result.error === 'authorization_gone') return finish('authorization_gone')

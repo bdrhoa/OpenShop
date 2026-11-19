@@ -174,7 +174,7 @@ describe('checkout.session.completed', () => {
   })
 })
 
-describe('manual review', () => {
+describe('review hold (decisions arrive from Kount)', () => {
   async function reviewOrder() {
     const stripe = fakeStripe()
     const client = fakeClient(KOUNT_REVIEW)
@@ -183,23 +183,41 @@ describe('manual review', () => {
     return { stripe, client, svc }
   }
 
-  it('reviewer APPROVE captures, reports CAPTURED with the decision, allows fulfillment', async () => {
+  it('REVIEW puts the order on hold and blocks fulfillment', async () => {
+    const { svc } = await reviewOrder()
+    const stored = await svc.getRecord(SESSION.id)
+    expect(stored.hold).toEqual(expect.objectContaining({ status: 'on_hold', reason: 'kount_review' }))
+    expect(summarizeRecord(stored).onHold).toBe(true)
+    expect(await svc.isFulfillmentAllowed(SESSION.id)).toEqual(expect.objectContaining({ allowed: false, onHold: true }))
+  })
+
+  it('the hold blocks fulfillment even if the order were marked fulfillable', async () => {
+    const { svc } = await reviewOrder()
+    const stored = await svc.getRecord(SESSION.id)
+    stored.fulfillmentAllowed = true
+    await svc.saveRecord(stored)
+    expect((await svc.isFulfillmentAllowed(SESSION.id)).allowed).toBe(false)
+  })
+
+  it('Kount APPROVE lifts the hold, captures, reports CAPTURED and allows fulfillment', async () => {
     const { stripe, client, svc } = await reviewOrder()
     const { record } = await svc.resolveReview(SESSION.id, 'APPROVE')
     expect(stripe.paymentIntents.capture).toHaveBeenCalledTimes(1)
     expect(record.review.status).toBe('approved')
-    expect((await svc.getRecord(SESSION.id)).fulfillmentAllowed).toBe(true)
-    expect(client.updateOrder).toHaveBeenCalledWith('K1', expect.objectContaining({ riskInquiry: { decision: 'APPROVE' }, transactions: [{ transactionId: 'K1#0', transactionStatus: 'CAPTURED' }] }))
+    const stored = await svc.getRecord(SESSION.id)
+    expect(stored.hold).toEqual(expect.objectContaining({ status: 'released', releasedBy: 'kount', outcome: 'approved' }))
+    expect(stored.fulfillmentAllowed).toBe(true)
+    expect(client.updateOrder).toHaveBeenCalledWith('K1', { merchantOrderId: 'order-1', transactions: [{ transactionId: 'K1#0', transactionStatus: 'CAPTURED' }] })
   })
 
-  it('reviewer DECLINE releases the authorization and keeps fulfillment blocked', async () => {
-    const { stripe, client, svc } = await reviewOrder()
+  it('Kount DECLINE lifts the hold, releases the authorization and keeps fulfillment blocked', async () => {
+    const { stripe, svc } = await reviewOrder()
     await svc.resolveReview(SESSION.id, 'DECLINE')
     expect(stripe.paymentIntents.cancel).toHaveBeenCalledTimes(1)
     const stored = await svc.getRecord(SESSION.id)
+    expect(stored.hold.outcome).toBe('declined')
     expect(stored.fulfillmentAllowed).toBe(false)
     expect(stored.payment.state).toBe('canceled')
-    expect(client.updateOrder).toHaveBeenCalledWith('K1', expect.objectContaining({ riskInquiry: { decision: 'DECLINE' } }))
   })
 
   it('a repeated click is idempotent; a conflicting one is refused', async () => {
@@ -218,6 +236,7 @@ describe('manual review', () => {
     expect(stripe.paymentIntents.capture).not.toHaveBeenCalled()
     const stored = await svc.getRecord(SESSION.id)
     expect(stored.payment.state).toBe('expired')
+    expect(stored.hold).toEqual(expect.objectContaining({ status: 'released', outcome: 'authorization_expired' }))
     expect(client.updateOrder.mock.calls.at(-1)[1].transactions[0].transactionStatus).toBe('EXPIRED')
   })
 
@@ -353,7 +372,8 @@ describe('Kount portal decisions (webhook events)', () => {
     expect(result.outcome).toBe('declined')
     expect(stripe.paymentIntents.cancel).toHaveBeenCalledTimes(1)
     const stored = await svc.getRecord(SESSION.id)
-    expect(stored.review).toEqual(expect.objectContaining({ status: 'declined', decidedBy: 'kount', reportDecision: false }))
+    expect(stored.review).toEqual(expect.objectContaining({ status: 'declined', decidedBy: 'kount' }))
+    expect(stored.hold.status).toBe('released')
     expect(stored.fulfillmentAllowed).toBe(false)
     // Status is still reported; the decision itself is not sent back.
     expect(client.updateOrder).toHaveBeenCalledWith('K1', { merchantOrderId: 'order-1', transactions: [{ transactionId: 'K1#0', transactionStatus: 'CANCELED' }] })
@@ -394,11 +414,5 @@ describe('Kount portal decisions (webhook events)', () => {
     // The reviewer decision was persisted first; the redelivery resumes it.
     expect((await svc.handleKountWebhookEvent(event('APPROVE'))).outcome).toBe('approved')
     expect((await svc.getRecord(SESSION.id)).payment.state).toBe('captured')
-  })
-
-  it('an admin approval in OpenShop still reports the reviewer decision to Kount', async () => {
-    const { client, svc } = await reviewOrder()
-    await svc.resolveReview(SESSION.id, 'APPROVE')
-    expect(client.updateOrder.mock.calls.at(-1)[1].riskInquiry).toEqual({ decision: 'APPROVE' })
   })
 })

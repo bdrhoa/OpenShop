@@ -5,7 +5,7 @@ import { StripeService } from '../../services/StripeService.js'
 import { getKVNamespace } from '../../utils/kv.js'
 import { asyncHandler } from '../../middleware/errorHandler.js'
 import { resolveSetting } from '../../services/DeveloperSettingsService.js'
-import { KountOrderService, summarizeRecord } from '../../services/KountOrderService.js'
+import { KountOrderService, isOnHold, summarizeRecord } from '../../services/KountOrderService.js'
 
 const router = new Hono()
 
@@ -43,7 +43,10 @@ router.get('/orders', asyncHandler(async (c) => {
     cursor,
     showFulfilled,
     fulfillmentStatus,
-    kvNamespace
+    kvNamespace,
+    isOnHold: kvNamespace
+      ? async (sessionId) => isOnHold(await new KountOrderService({ kv: kvNamespace, stripe: null, config: null, client: null }).getRecord(sessionId).catch(() => null))
+      : undefined,
   })
 
   // Attach the Kount decision / review / payment state to held orders.
@@ -72,7 +75,9 @@ router.post('/orders/:orderId/fulfill', asyncHandler(async (c) => {
   const gate = await kount.isFulfillmentAllowed(orderId)
   if (!gate.allowed) {
     return c.json({
-      error: 'This order cannot be fulfilled until it is approved and the payment is captured.',
+      error: gate.onHold
+        ? 'This order is on hold for Kount review. It can be fulfilled after a reviewer approves it in Kount.'
+        : 'This order cannot be fulfilled until it is approved and the payment is captured.',
       kount: summarizeRecord(gate.record),
     }, 409)
   }

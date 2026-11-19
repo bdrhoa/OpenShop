@@ -2,7 +2,6 @@
 import { Hono } from 'hono'
 import { asyncHandler } from '../../middleware/errorHandler.js'
 import { APIError, ValidationError } from '../../utils/errors.js'
-import { parseJsonBody } from '../../utils/request.js'
 import { getKVNamespace } from '../../utils/kv.js'
 import { resolveSetting } from '../../services/DeveloperSettingsService.js'
 import { StripeService } from '../../services/StripeService.js'
@@ -77,27 +76,10 @@ router.get('/orders/:sessionId', asyncHandler(async (c) => {
   return c.json({ kount: summarizeRecord(record) })
 }))
 
-// Reviewer decision for a REVIEW order: APPROVE captures, DECLINE releases.
-router.post('/orders/:sessionId/review', asyncHandler(async (c) => {
-  const sessionId = validSessionId(c.req.param('sessionId'))
-  const { decision } = await parseJsonBody(c)
-  if (decision !== 'APPROVE' && decision !== 'DECLINE') {
-    throw new ValidationError('decision must be APPROVE or DECLINE')
-  }
-  const service = await buildService(c)
-  const result = await service.resolveReview(sessionId, decision)
-  const messages = {
-    not_found: ['No Kount record for this order', 404],
-    not_in_review: ['This order is not in review', 409],
-    already_resolved: ['This review was already resolved differently', 409],
-    authorization_gone: ['The card authorization has expired or was released; it cannot be captured', 409],
-  }
-  if (result.error) {
-    const [message, status] = messages[result.error] || ['Review failed', 500]
-    return c.json({ error: message, kount: summarizeRecord(result.record) }, status)
-  }
-  return c.json({ kount: summarizeRecord(result.record) })
-}))
+// Note: there is deliberately no endpoint to approve or decline a REVIEW
+// order from OpenShop. A review hold is lifted only by the reviewer's decision
+// in the Kount portal, delivered by the signed Kount webhook
+// (routes/public/kountWebhook.js).
 
 // Retry a rejected, escalated or pending reporting job after fixing the cause.
 router.post('/jobs/:jobId/retry', asyncHandler(async (c) => {

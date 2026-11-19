@@ -54,10 +54,10 @@ These endpoints require admin authentication via the `X-Admin-Token` header.
 | `/api/admin/drive/oauth/start` | `GET` | Begin Google Drive OAuth | Admin Token |
 | `/api/admin/drive/oauth/callback` | `GET` | Handle Drive OAuth callback | Admin Token |
 | `/api/admin/drive/upload` | `POST` | Upload image to Google Drive | Admin Token |
-| `/api/admin/analytics/orders/:id/fulfill` | `POST` | Mark fulfilled; `409` while a Kount-held order is unapproved or uncaptured | Admin Token |
+| `/api/admin/analytics/orders` | `GET` | Orders; `status` = `open`, `on_hold` (Kount review), `fulfilled` or `all` | Admin Token |
+| `/api/admin/analytics/orders/:id/fulfill` | `POST` | Mark fulfilled; `409` while an order is on hold for Kount review or not yet approved/captured | Admin Token |
 | `/api/admin/kount/status` | `GET` | Effective non-secret Kount config and reporting jobs needing work | Admin Token |
-| `/api/admin/kount/orders/:sessionId` | `GET` | Kount decision, payment and review state | Admin Token |
-| `/api/admin/kount/orders/:sessionId/review` | `POST` | `{ decision: "APPROVE" \| "DECLINE" }` — capture or release a REVIEW order | Admin Token |
+| `/api/admin/kount/orders/:sessionId` | `GET` | Kount decision, payment, review and hold state (review holds are released only by the Kount webhook) | Admin Token |
 | `/api/admin/kount/jobs/:jobId/retry` | `POST` | Re-queue a failed Kount reporting job | Admin Token |
 | `/api/admin/developer-settings/password` | `PUT, DELETE` | Change or reset admin password (`currentPassword` required); revokes all sessions | Admin Token |
 

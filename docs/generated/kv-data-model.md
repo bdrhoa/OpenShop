@@ -98,7 +98,7 @@ See [KOUNT.md](../KOUNT.md).
 | Pattern | Value |
 |---------|--------|
 | `kount:checkout:{openshopOrderId}` | `{ deviceSessionId, userIp, createdAt }` saved at checkout (TTL 8 days) |
-| `kount:order:{checkoutSessionId}` | Decision record: `evaluation` (decision, decisionSource, fallbackReason, attempts, correlationId, kountOrderId), `payment.state`, `review`, `fulfillmentAllowed`, `reporting[]` |
+| `kount:order:{checkoutSessionId}` | Decision record: `evaluation` (decision, decisionSource, fallbackReason, attempts, correlationId, kountOrderId), `payment.state`, `review`, `hold` (`on_hold` \| `released`, set on REVIEW, released only by the Kount webhook or authorization expiry), `fulfillmentAllowed`, `reporting[]` |
 | `kount:pi:{paymentIntentId}` | Checkout session ID (index) |
 | `kount:korder:{kountOrderId}`, `kount:morder:{openshopOrderId}` | Checkout session ID (indexes for Kount webhooks) |
 | `kount:whevent:{eventId}` | Handled Kount webhook event, `{ outcome, at }` (TTL 7 days) |

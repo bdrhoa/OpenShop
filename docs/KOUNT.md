@@ -46,28 +46,44 @@ Stripe ──► POST /api/stripe-webhook  (signature verified)
 | (not yet evaluated) | authorized | blocked | "Processing your order" |
 | APPROVE | captured | allowed | "Order confirmed" |
 | DECLINE | authorization released | blocked | "We could not complete your order" |
-| REVIEW | authorized, not captured | blocked | "Order received" (being reviewed) |
-| Reviewer approves | captured | allowed | "Order confirmed" |
-| Reviewer declines | authorization released | blocked | "We could not complete your order" |
+| REVIEW | authorized, not captured | **On hold** | "Order received" (being reviewed) |
+| Kount reviewer approves (webhook) | captured | allowed | "Order confirmed" |
+| Kount reviewer declines (webhook) | authorization released | blocked | "We could not complete your order" |
 
 Fulfillment is enforced on the server: `POST /api/admin/analytics/orders/:id/fulfill`
 returns **409** for a held order until it is approved and captured.
 
-**REVIEW orders** can be decided in either place:
+### Review hold
 
-- **OpenShop:** in **Admin → Fulfillment**, open the order and choose *Approve &
-  capture* or *Decline & release*. The reviewer decision is sent to Kount with
-  the transaction status.
-- **Kount portal:** when a reviewer changes the decision to APPROVE or DECLINE,
-  Kount calls the [Kount webhook](#kount-webhook). OpenShop captures or releases
-  the payment the same way. The transaction status is reported to Kount, but
-  the decision isn't sent back, because it came from Kount.
+When Kount returns **REVIEW**, the order is put **On hold**
+(`hold: { status: "on_hold", reason: "kount_review", since }` on the order
+record):
 
-Whichever decision arrives first wins. A conflicting decision afterwards is
-refused (`already_resolved`). Repeating the same decision is safe: if the
-capture or release failed the first time, the repeat completes it. Stripe authorizations expire after about
-7 days. An expired authorization cannot be captured: it is recorded as
-`expired`, reported as `EXPIRED`, and the approve action is refused.
+- It can't be fulfilled. The fulfill endpoint returns 409 ("on hold for Kount
+  review") whatever other state the order is in. This also covers the store
+  agent, which uses the same endpoint.
+- **Admin → Fulfillment** shows it with an **On hold** pill under its own **On
+  hold** filter, and leaves it out of **Open**.
+- The card stays authorized and isn't captured.
+
+**The hold is released only by Kount.** A reviewer decides in the Kount portal,
+and the signed [Kount webhook](#kount-webhook) is processed. OpenShop has no
+button or endpoint to approve or decline a review. When the decision arrives,
+the hold is released first (`status: "released", releasedBy: "kount", outcome`),
+then APPROVE captures and DECLINE releases the authorization. The transaction
+status is reported to Kount; the decision isn't sent back, because it came from
+Kount.
+
+- **Requires `KOUNT_WEBHOOK_PUBLIC_KEY`.** Without it the webhook can't verify
+  deliveries, so held orders stay on hold. A warning is logged whenever an
+  order goes on hold while the key is missing.
+- **Repeated decisions are safe.** A conflicting later decision is refused
+  (`already_resolved`). Repeating the same decision completes a capture or
+  release that failed the first time.
+- **Expired authorizations:** Stripe authorizations expire after about 7 days.
+  If one expires before Kount decides, the hold is released with outcome
+  `authorization_expired`, the payment is recorded as `expired` and reported as
+  `EXPIRED`, and the order can no longer be captured.
 
 ### Failed attempts
 
@@ -284,5 +300,5 @@ rejects its own RFC 3339 examples.
 | `src/lib/kountWebhook.js` | Kount signature verification and event parsing |
 | `src/routes/public/kount.js` | `GET /api/kount/config` for DDC |
 | `src/routes/admin/kount.js` | Status, review, job retry |
-| `src/components/admin/KountOrderStatus.jsx` | Fulfillment badge and review panel |
+| `src/components/admin/KountOrderStatus.jsx` | Fulfillment badge and read-only Kount/hold panel |
 | `tests/unit/kount/`, `tests/integration/kount.test.js` | Tests |

@@ -266,11 +266,12 @@ export function FulfillmentPage() {
     <div className="space-y-5">
       <AdminPageHeader
         title="Fulfillment"
-        description="Open orders waiting to ship, and a record of fulfilled orders."
+        description="Open orders waiting to ship, orders on hold for fraud review, and a record of fulfilled orders."
         actions={
           <div className="inline-flex rounded-[var(--os-radius-md)] border border-[var(--os-color-border)] bg-[var(--os-color-bg-surface)] p-0.5">
             {[
               { value: 'open', label: 'Open' },
+              { value: 'on_hold', label: 'On hold' },
               { value: 'fulfilled', label: 'Fulfilled' },
               { value: 'all', label: 'All' },
             ].map((item) => (
@@ -306,7 +307,7 @@ export function FulfillmentPage() {
           <CardContent className="p-12 text-center">
             <ShoppingBag className="w-12 h-12 text-[var(--admin-border-secondary)] mx-auto mb-4" />
             <h3 className="text-base font-medium text-[var(--admin-text-primary)] mb-2">
-              {statusFilter === 'open' ? 'No open orders' : statusFilter === 'fulfilled' ? 'No fulfilled orders' : 'No orders yet'}
+              {statusFilter === 'open' ? 'No open orders' : statusFilter === 'on_hold' ? 'No orders on hold' : statusFilter === 'fulfilled' ? 'No fulfilled orders' : 'No orders yet'}
             </h3>
             <p className="text-[var(--admin-text-secondary)] text-sm">
               {statusFilter === 'fulfilled'
@@ -350,10 +351,12 @@ export function FulfillmentPage() {
                           className={`mb-1 inline-flex w-fit items-center rounded-full px-2 py-0.5 text-xs font-medium ${
                             order.fulfillment?.fulfilled
                               ? 'bg-[var(--admin-success-bg)] text-[var(--admin-success)]'
-                              : 'bg-[var(--admin-bg-elevated)] text-[var(--admin-text-secondary)]'
+                              : order.kount?.onHold
+                                ? 'bg-[var(--admin-warning-bg,var(--admin-bg-elevated))] text-[var(--admin-warning,var(--admin-text-primary))]'
+                                : 'bg-[var(--admin-bg-elevated)] text-[var(--admin-text-secondary)]'
                           }`}
                         >
-                          {order.fulfillment?.fulfilled ? 'Fulfilled' : 'Open'}
+                          {order.fulfillment?.fulfilled ? 'Fulfilled' : order.kount?.onHold ? 'On hold' : 'Open'}
                         </span>
                         <KountBadge kount={order.kount} />
                         <span className="text-xs text-[var(--admin-text-muted)]">
@@ -556,22 +559,18 @@ export function FulfillmentPage() {
 
             {selectedOrder.kount && (
               <div className="px-5 pb-4">
-                <KountOrderPanel
-                  orderId={selectedOrder.id}
-                  kount={selectedOrder.kount}
-                  onChanged={(kount) => {
-                    const updated = { ...selectedOrder, kount }
-                    setSelectedOrder(updated)
-                    setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)))
-                  }}
-                />
+                <KountOrderPanel kount={selectedOrder.kount} />
               </div>
             )}
 
             <div className="p-5 border-t border-[var(--admin-border-primary)] flex justify-between items-center">
               {!selectedOrder.fulfillment?.fulfilled ? (
                 <div className="text-sm text-[var(--admin-text-secondary)]">
-                  {selectedOrder.kount && !selectedOrder.kount.fulfillmentAllowed ? 'Not ready: awaiting fraud approval' : 'This order is ready for fulfillment'}
+                  {selectedOrder.kount?.onHold
+                    ? 'On hold: awaiting the Kount review decision'
+                    : selectedOrder.kount && !selectedOrder.kount.fulfillmentAllowed
+                      ? 'Not ready: awaiting fraud approval'
+                      : 'This order is ready for fulfillment'}
                 </div>
               ) : (
                 <div className="inline-flex items-center gap-1 text-sm text-[var(--admin-success)] font-medium">
@@ -588,7 +587,7 @@ export function FulfillmentPage() {
                     Print Label
                   </Button>
                 )}
-                {!selectedOrder.fulfillment?.fulfilled && (!selectedOrder.kount || selectedOrder.kount.fulfillmentAllowed) && (
+                {!selectedOrder.fulfillment?.fulfilled && (!selectedOrder.kount || (selectedOrder.kount.fulfillmentAllowed && !selectedOrder.kount.onHold)) && (
                   <Button onClick={() => fulfillOrder(selectedOrder.id)} size="sm">
                     Fulfill Order
                   </Button>

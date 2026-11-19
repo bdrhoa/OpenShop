@@ -1,7 +1,3 @@
-import { useState } from 'react'
-import { Button } from '../ui/button'
-import { adminApiRequest } from '../../lib/auth'
-
 const DECISION_LABELS = {
   APPROVE: 'Approved',
   DECLINE: 'Declined',
@@ -26,7 +22,7 @@ function decisionText(kount) {
 
 function badgeTone(kount) {
   if (kount?.fulfillmentAllowed) return 'bg-[var(--admin-success-bg)] text-[var(--admin-success)]'
-  if (kount?.decision === 'REVIEW' && kount.review?.status === 'open') return 'bg-[var(--admin-warning-bg,var(--admin-bg-elevated))] text-[var(--admin-warning,var(--admin-text-primary))]'
+  if (kount?.onHold) return 'bg-[var(--admin-warning-bg,var(--admin-bg-elevated))] text-[var(--admin-warning,var(--admin-text-primary))]'
   return 'bg-[var(--admin-bg-elevated)] text-[var(--admin-text-secondary)]'
 }
 
@@ -41,39 +37,30 @@ export function KountBadge({ kount }) {
 }
 
 /**
- * Kount details and reviewer actions inside the order modal. Fulfillment is
- * also enforced on the server; this only explains why it is unavailable.
+ * Kount details inside the order modal. Read-only: a review hold is lifted
+ * only by the reviewer's decision in the Kount portal (signed webhook), never
+ * from OpenShop. Fulfillment is also enforced on the server.
  */
-export function KountOrderPanel({ orderId, kount, onChanged }) {
-  const [busy, setBusy] = useState(null)
-  const [error, setError] = useState('')
+export function KountOrderPanel({ kount }) {
   if (!kount) return null
-
-  const review = async (decision) => {
-    setBusy(decision)
-    setError('')
-    try {
-      const res = await adminApiRequest(`/api/admin/kount/orders/${orderId}/review`, {
-        method: 'POST',
-        body: JSON.stringify({ decision }),
-      })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(body.error || 'Review failed')
-      onChanged?.(body.kount)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const canReview = kount.decision === 'REVIEW' && kount.review?.status === 'open' && kount.paymentState === 'authorized'
   const pendingReports = (kount.reporting || []).filter((r) => r.state !== 'confirmed')
 
   return (
     <div className="rounded-lg border border-[var(--admin-border-primary)] p-4 text-sm space-y-1.5">
       <div className="font-semibold text-[var(--admin-text-primary)]">Fraud screening (Kount)</div>
       <div className="text-[var(--admin-text-secondary)]">{decisionText(kount)}</div>
+      {kount.onHold && (
+        <div role="status" className="rounded-md bg-[var(--admin-bg-elevated)] p-2 text-[var(--admin-text-primary)]">
+          <strong>On hold</strong> since {kount.hold?.since ? new Date(kount.hold.since).toLocaleString() : 'evaluation'}.
+          A reviewer must approve or decline this order in the Kount portal. It is released automatically when
+          Kount&apos;s webhook arrives; it cannot be released from OpenShop.
+        </div>
+      )}
+      {kount.hold?.status === 'released' && (
+        <div className="text-[var(--admin-text-secondary)]">
+          Hold released {kount.hold.releasedAt ? new Date(kount.hold.releasedAt).toLocaleString() : ''} ({String(kount.hold.outcome || '').replace(/_/g, ' ')}).
+        </div>
+      )}
       {kount.decisionSource === 'fallback' && (
         <div className="text-[var(--admin-text-secondary)]">
           Kount returned no usable decision ({kount.fallbackReason}); the configured fallback was applied after {kount.attempts} attempt(s).
@@ -89,20 +76,9 @@ export function KountOrderPanel({ orderId, kount, onChanged }) {
           Kount status updates not yet confirmed: {pendingReports.map((r) => `${r.transactionStatus} (${r.state})`).join(', ')}
         </div>
       )}
-      {!kount.fulfillmentAllowed && (
+      {!kount.fulfillmentAllowed && !kount.onHold && (
         <div className="text-[var(--admin-text-secondary)]">Fulfillment is blocked until the order is approved and the payment is captured.</div>
       )}
-      {canReview && (
-        <div className="flex gap-2 pt-2">
-          <Button size="sm" onClick={() => review('APPROVE')} disabled={Boolean(busy)}>
-            {busy === 'APPROVE' ? 'Capturing…' : 'Approve & capture'}
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => review('DECLINE')} disabled={Boolean(busy)}>
-            {busy === 'DECLINE' ? 'Releasing…' : 'Decline & release'}
-          </Button>
-        </div>
-      )}
-      {error && <p role="alert" className="text-[var(--admin-error)]">{error}</p>}
     </div>
   )
 }

@@ -158,6 +158,15 @@ export class AnalyticsService {
       }))
     }
 
+    // Orders held for review (e.g. Kount REVIEW) get their own "on_hold"
+    // filter and are kept out of "open", since they cannot be fulfilled.
+    const onHold = new Set()
+    if (typeof options.isOnHold === 'function' && candidates.length > 0) {
+      await Promise.all(candidates.map(async (s) => {
+        if (await options.isOnHold(s.id)) onHold.add(s.id)
+      }))
+    }
+
     for (const s of candidates) {
       let includeSession = true
 
@@ -172,8 +181,10 @@ export class AnalyticsService {
           if (!fulfillmentStatus.fulfilled) {
             includeSession = false
           }
+        } else if (fulfillmentFilter === 'on_hold') {
+          includeSession = !fulfillmentStatus.fulfilled && onHold.has(s.id)
         } else {
-          if (fulfillmentStatus.fulfilled) {
+          if (fulfillmentStatus.fulfilled || onHold.has(s.id)) {
             includeSession = false
           }
         }
