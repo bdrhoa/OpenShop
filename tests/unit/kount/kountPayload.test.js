@@ -5,6 +5,7 @@ import {
   buildFailedAttemptPayload,
   buildStatusUpdatePayload,
   mapAvs,
+  mapPayment,
   parseEvaluationResponse,
   parseRetryAfter,
   splitName,
@@ -37,9 +38,8 @@ describe('buildEvaluationPayload', () => {
     expect(tx.transactionStatus).toBe('AUTHORIZED')
     expect(tx.authorizationStatus).toEqual(expect.objectContaining({ authResult: 'APPROVED', processorTransactionId: 'ch_test_1', processorAuthCode: '123456' }))
     expect(tx.authorizationStatus.verificationResponse).toEqual({ cvvStatus: 'MATCH', avsStatus: 'Y' })
-    expect(tx.payment).toEqual({ type: 'CREDIT_CARD', last4: '4242', cardBrand: 'visa', expirationMonth: 12, expirationYear: 2030 })
+    expect(tx.payment).toEqual({ type: 'TOKEN', paymentToken: 'fpTestCard4242', last4: '4242', cardBrand: 'visa', expirationMonth: 12, expirationYear: 2030 })
     expect(tx.payment).not.toHaveProperty('bin') // not exposed by Stripe; never invented
-    expect(tx.payment).not.toHaveProperty('paymentToken')
     expect(tx.orderTotal).toBe('3000')
     expect(tx.subtotal).toBe('2500')
     expect(tx.currency).toBe('USD')
@@ -62,14 +62,32 @@ describe('buildEvaluationPayload', () => {
   })
 })
 
+describe('mapPayment', () => {
+  const card = (extra) => ({ payment_method_details: { card: { brand: 'mastercard', last4: '4444', ...extra } } })
+
+  it('sends the Stripe card fingerprint as a TOKEN', () => {
+    expect(mapPayment(card({ fingerprint: 'fpX', funding: 'debit' }))).toEqual(expect.objectContaining({ type: 'TOKEN', paymentToken: 'fpX', cardBrand: 'mastercard' }))
+  })
+
+  it('falls back to the card type with no token when there is no fingerprint', () => {
+    expect(mapPayment(card({ funding: 'debit' }))).toEqual({ type: 'DEBIT_CARD', last4: '4444', cardBrand: 'mastercard' })
+    expect(mapPayment(card({ fingerprint: null }))).toEqual({ type: 'CREDIT_CARD', last4: '4444', cardBrand: 'mastercard' })
+  })
+
+  it('sends NONE without card details', () => {
+    expect(mapPayment({})).toEqual({ type: 'NONE' })
+  })
+})
+
 describe('buildFailedAttemptPayload', () => {
   it('reports an issuer decline as REFUSED / DECLINED with the decline code', () => {
     const { payload, failure } = buildFailedAttemptPayload({
       merchantOrderId: 'order-1',
       paymentIntent: { id: 'pi_1', amount: 1000, currency: 'usd', last_payment_error: { decline_code: 'insufficient_funds' } },
-      charge: { id: 'ch_f', outcome: { type: 'issuer_declined', network_decline_code: '51' } },
+      charge: { id: 'ch_f', outcome: { type: 'issuer_declined', network_decline_code: '51' }, payment_method_details: { card: { brand: 'visa', last4: '0002', fingerprint: 'fpDeclined' } } },
     })
     expect(failure.kind).toBe('issuer_decline')
+    expect(payload.transactions[0].payment).toEqual(expect.objectContaining({ type: 'TOKEN', paymentToken: 'fpDeclined' }))
     expect(payload.transactions[0]).toEqual(expect.objectContaining({
       transactionStatus: 'REFUSED',
       authorizationStatus: { authResult: 'DECLINED', declineCode: '51', processorTransactionId: 'ch_f' },

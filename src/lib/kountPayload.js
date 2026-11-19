@@ -2,8 +2,11 @@
 //
 // No I/O here: services fetch Stripe data and call these builders, which keeps
 // the field mapping unit-testable. Only data Stripe actually exposes is sent.
-// Stripe does not expose the card BIN or a Kount-compatible payment token, so
-// those optional fields are omitted rather than invented. Timestamp fields are
+// Stripe never exposes the card number or BIN. The card is identified to
+// Kount by Stripe's card fingerprint (stable per card within the Stripe
+// account), sent as payment type TOKEN, which the Kount schema documents for
+// post-authorization calls where the processor returns a token instead of
+// card data. The BIN is omitted rather than invented. Timestamp fields are
 // omitted as well: the published schema's date-time pattern rejects its own
 // RFC 3339 examples (documented conflict "timestamp-pattern").
 import { KOUNT_DECISIONS } from '../config/kount.js'
@@ -87,12 +90,20 @@ export function mapAvs(checks = {}) {
   return undefined
 }
 
-/** Payment object from a Stripe charge's card details. */
+/**
+ * Payment object from a Stripe charge's card details.
+ *
+ * With a fingerprint: type TOKEN + paymentToken = fingerprint. Without one
+ * (rare), fall back to CREDIT_CARD / DEBIT_CARD with no token, so a value is
+ * never presented as a token when there is none.
+ */
 export function mapPayment(charge) {
   const card = charge?.payment_method_details?.card
   if (!card) return { type: 'NONE' }
+  const fingerprint = typeof card.fingerprint === 'string' && card.fingerprint ? card.fingerprint : undefined
   return compact({
-    type: card.funding === 'debit' ? 'DEBIT_CARD' : 'CREDIT_CARD',
+    type: fingerprint ? 'TOKEN' : (card.funding === 'debit' ? 'DEBIT_CARD' : 'CREDIT_CARD'),
+    paymentToken: fingerprint,
     last4: card.last4,
     cardBrand: KOUNT_CARD_BRANDS[card.brand],
     expirationMonth: Number.isInteger(card.exp_month) ? card.exp_month : undefined,

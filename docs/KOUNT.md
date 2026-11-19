@@ -172,10 +172,24 @@ being recovered. `GET /api/admin/kount/status` lists jobs that still need work.
 ## Data sent to Kount
 
 Only data that Stripe actually exposes is sent: items, totals in minor units,
-billing and shipping person, card brand, last4, expiry, funding (credit or
-debit), CVC/AVS results, the authorization code and charge ID, the buyer's IPv4
-address and the device session ID. Stripe does not expose the card **BIN** or a
-Kount-compatible **payment token**, so both are omitted rather than derived.
+billing and shipping person, card brand, last4, expiry, CVC/AVS results, the
+authorization code and charge ID, the buyer's IPv4 address and the device
+session ID.
+
+**Payment token.** Stripe never exposes the card number. The card is
+identified by Stripe's `card.fingerprint`, which is stable for the same card
+within the Stripe account. It is sent as `payment.type: "TOKEN"` with
+`paymentToken: <fingerprint>`, which the Kount schema documents for
+post-authorization calls where the processor returns a token instead of card
+data. This applies to both evaluations and refused-attempt reports. Because the
+type is `TOKEN`, Kount no longer sees whether the card is credit or debit. A
+fingerprint is specific to one Stripe account, so it links orders within this
+store but not with the same card seen at other merchants. If a charge has no
+fingerprint, the type falls back to `CREDIT_CARD` or `DEBIT_CARD` with no token.
+Confirm with Kount that `TOKEN` + Stripe fingerprint is treated as intended for
+your account.
+
+The card **BIN** is not exposed by Stripe and is omitted rather than derived.
 Timestamps are omitted because the published schema's date-time pattern
 rejects its own RFC 3339 examples.
 

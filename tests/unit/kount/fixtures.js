@@ -21,7 +21,7 @@ export const CHARGE = {
   id: 'ch_test_1',
   authorization_code: '123456',
   payment_method_details: {
-    card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2030, funding: 'credit', checks: { cvc_check: 'pass', address_line1_check: 'pass', address_postal_code_check: 'pass' } },
+    card: { brand: 'visa', last4: '4242', fingerprint: 'fpTestCard4242', exp_month: 12, exp_year: 2030, funding: 'credit', checks: { cvc_check: 'pass', address_line1_check: 'pass', address_postal_code_check: 'pass' } },
   },
 }
 
