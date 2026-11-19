@@ -5,16 +5,31 @@
 // defaults and validation. Invalid policy values are rejected with a clear
 // error instead of being silently replaced by a default.
 
-export const KOUNT_SANDBOX_TOKEN_URL = 'https://login-uat.equifax.com/as/token'
-export const KOUNT_SANDBOX_API_BASE_URL = 'https://api-sandbox.kount.com'
 export const KOUNT_TOKEN_SCOPE = 'k1_integration_api'
+
+// One switch selects the token server, API host and device-collection
+// environment together, so they cannot point at different environments.
+// Endpoints from the Payments Fraud v2.0 Integration Guide.
+export const KOUNT_ENVIRONMENTS = {
+  SANDBOX: {
+    label: 'Sandbox',
+    tokenUrl: 'https://login-uat.equifax.com/as/token',
+    apiBaseUrl: 'https://api-sandbox.kount.com',
+    ddcEnvironment: 'TEST',
+  },
+  PRODUCTION: {
+    label: 'Production',
+    tokenUrl: 'https://login.equifax.com/as/token',
+    apiBaseUrl: 'https://api.kount.com',
+    ddcEnvironment: 'PROD',
+  },
+}
+export const KOUNT_DEFAULT_ENVIRONMENT = 'SANDBOX'
 
 export const KOUNT_DEFAULT_MAX_RETRIES = 2
 export const KOUNT_MAX_RETRIES_LIMIT = 3
 export const KOUNT_FALLBACK_DECISIONS = ['APPROVE', 'DECLINE']
 export const KOUNT_DEFAULT_FALLBACK_DECISION = 'APPROVE'
-export const KOUNT_DDC_ENVIRONMENTS = ['TEST', 'PROD']
-export const KOUNT_DEFAULT_DDC_ENVIRONMENT = 'TEST'
 export const KOUNT_DECISIONS = ['APPROVE', 'DECLINE', 'REVIEW']
 // Kount fulfillment shipping.method enumeration.
 export const KOUNT_SHIPPING_METHODS = ['STANDARD', 'EXPRESS', 'SAME_DAY', 'NEXT_DAY', 'SECOND_DAY']
@@ -33,17 +48,23 @@ export const KOUNT_SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/
 /**
  * Every setting the integration reads. `secret` values are never returned to
  * the browser. All are editable from Developer Settings and fall back to env.
+ * `options` renders the field as a dropdown; `defaultValue` is what applies
+ * when neither Developer Settings nor env sets it.
  */
 export const KOUNT_SETTING_FIELDS = [
+  {
+    key: 'KOUNT_ENVIRONMENT',
+    label: 'Kount environment',
+    secret: false,
+    options: Object.entries(KOUNT_ENVIRONMENTS).map(([value, env]) => ({ value, label: env.label })),
+    defaultValue: KOUNT_DEFAULT_ENVIRONMENT,
+  },
   { key: 'KOUNT_CLIENT_ID', label: 'Kount client ID', secret: false },
   { key: 'KOUNT_API_KEY', label: 'Kount API key', secret: true },
   { key: 'KOUNT_MAX_RETRIES', label: `Kount max retries (0–${KOUNT_MAX_RETRIES_LIMIT}, default ${KOUNT_DEFAULT_MAX_RETRIES})`, secret: false },
   { key: 'KOUNT_FALLBACK_DECISION', label: 'Kount fallback decision (APPROVE or DECLINE, default APPROVE)', secret: false },
   { key: 'KOUNT_CHANNEL', label: 'Kount channel (optional)', secret: false },
   { key: 'KOUNT_SHIPPING_METHOD', label: `Kount shipping method for shipped orders (${KOUNT_SHIPPING_METHODS.join(', ')}; blank = not sent)`, secret: false },
-  { key: 'KOUNT_DDC_ENVIRONMENT', label: 'Kount device collection environment (TEST or PROD)', secret: false },
-  { key: 'KOUNT_TOKEN_URL', label: 'Kount token URL (default: Sandbox)', secret: false },
-  { key: 'KOUNT_API_BASE_URL', label: 'Kount API base URL (default: Sandbox)', secret: false },
   { key: 'STRIPE_WEBHOOK_SECRET', label: 'Stripe webhook signing secret', secret: true },
 ]
 
@@ -79,19 +100,10 @@ export function validateKountSetting(key, value) {
       return KOUNT_SHIPPING_METHODS.includes(v)
         ? null
         : `KOUNT_SHIPPING_METHOD must be one of ${KOUNT_SHIPPING_METHODS.join(', ')}`
-    case 'KOUNT_DDC_ENVIRONMENT':
-      return KOUNT_DDC_ENVIRONMENTS.includes(v)
+    case 'KOUNT_ENVIRONMENT':
+      return Object.hasOwn(KOUNT_ENVIRONMENTS, v)
         ? null
-        : `KOUNT_DDC_ENVIRONMENT must be one of ${KOUNT_DDC_ENVIRONMENTS.join(', ')}`
-    case 'KOUNT_TOKEN_URL':
-    case 'KOUNT_API_BASE_URL': {
-      try {
-        const url = new URL(v)
-        return url.protocol === 'https:' ? null : `${key} must be an https URL`
-      } catch {
-        return `${key} must be a valid URL`
-      }
-    }
+        : `KOUNT_ENVIRONMENT must be one of ${Object.keys(KOUNT_ENVIRONMENTS).join(', ')}`
     case 'KOUNT_API_KEY':
       return /\s/.test(v) || /^basic\s/i.test(v)
         ? 'KOUNT_API_KEY must be the raw portal API key (no "Basic " prefix or whitespace)'
@@ -118,6 +130,8 @@ export function buildKountConfig(raw = {}) {
   const str = (key) => (blank(raw[key]) ? '' : String(raw[key]).trim())
   const clientId = str('KOUNT_CLIENT_ID')
   const apiKey = str('KOUNT_API_KEY')
+  const environment = str('KOUNT_ENVIRONMENT') || KOUNT_DEFAULT_ENVIRONMENT
+  const endpoints = KOUNT_ENVIRONMENTS[environment]
 
   return {
     // Risk evaluation runs only when both credentials are present.
@@ -128,9 +142,10 @@ export function buildKountConfig(raw = {}) {
     fallbackDecision: str('KOUNT_FALLBACK_DECISION') || KOUNT_DEFAULT_FALLBACK_DECISION,
     channel: str('KOUNT_CHANNEL'),
     shippingMethod: str('KOUNT_SHIPPING_METHOD'),
-    ddcEnvironment: str('KOUNT_DDC_ENVIRONMENT') || KOUNT_DEFAULT_DDC_ENVIRONMENT,
-    tokenUrl: str('KOUNT_TOKEN_URL') || KOUNT_SANDBOX_TOKEN_URL,
-    apiBaseUrl: (str('KOUNT_API_BASE_URL') || KOUNT_SANDBOX_API_BASE_URL).replace(/\/+$/, ''),
+    environment,
+    tokenUrl: endpoints.tokenUrl,
+    apiBaseUrl: endpoints.apiBaseUrl,
+    ddcEnvironment: endpoints.ddcEnvironment,
     stripeWebhookSecret: str('STRIPE_WEBHOOK_SECRET'),
   }
 }

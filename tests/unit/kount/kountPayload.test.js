@@ -188,9 +188,19 @@ describe('Kount configuration', () => {
       enabled: true,
       maxRetries: 2,
       fallbackDecision: 'APPROVE',
+      environment: 'SANDBOX',
       ddcEnvironment: 'TEST',
       tokenUrl: 'https://login-uat.equifax.com/as/token',
       apiBaseUrl: 'https://api-sandbox.kount.com',
+    }))
+  })
+
+  it('PRODUCTION switches token server, API host and DDC together', () => {
+    expect(buildKountConfig({ KOUNT_ENVIRONMENT: 'PRODUCTION' })).toEqual(expect.objectContaining({
+      environment: 'PRODUCTION',
+      tokenUrl: 'https://login.equifax.com/as/token',
+      apiBaseUrl: 'https://api.kount.com',
+      ddcEnvironment: 'PROD',
     }))
   })
 
@@ -208,8 +218,8 @@ describe('Kount configuration', () => {
     expect(() => buildKountConfig({ KOUNT_MAX_RETRIES: '-1' })).toThrow(/KOUNT_MAX_RETRIES/)
     expect(() => buildKountConfig({ KOUNT_FALLBACK_DECISION: 'REVIEW' })).toThrow(/KOUNT_FALLBACK_DECISION/)
     expect(validateKountSetting('KOUNT_API_KEY', 'Basic abc')).toMatch(/Basic/)
-    expect(validateKountSetting('KOUNT_TOKEN_URL', 'http://insecure.test')).toMatch(/https/)
-    expect(validateKountSetting('KOUNT_DDC_ENVIRONMENT', 'STAGING')).toMatch(/TEST, PROD/)
+    expect(validateKountSetting('KOUNT_ENVIRONMENT', 'STAGING')).toMatch(/SANDBOX, PRODUCTION/)
+    expect(() => buildKountConfig({ KOUNT_ENVIRONMENT: 'sandbox' })).toThrow(/KOUNT_ENVIRONMENT/)
     expect(() => buildKountConfig({ KOUNT_SHIPPING_METHOD: 'OVERNIGHT' })).toThrow(/KOUNT_SHIPPING_METHOD/)
     expect(buildKountConfig({ KOUNT_SHIPPING_METHOD: 'SECOND_DAY' }).shippingMethod).toBe('SECOND_DAY')
     expect(buildKountConfig({}).shippingMethod).toBe('')

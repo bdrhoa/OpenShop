@@ -58,6 +58,7 @@ router.get('/status', asyncHandler(async (c) => {
     webhookSecretConfigured: Boolean(config?.stripeWebhookSecret),
     maxRetries: config?.maxRetries ?? null,
     fallbackDecision: config?.fallbackDecision ?? null,
+    environment: config?.environment ?? null,
     ddcEnvironment: config?.ddcEnvironment ?? null,
     channel: config?.channel || null,
     shippingMethod: config?.shippingMethod || null,

@@ -149,7 +149,8 @@ export function DeveloperSettingsPage() {
                 <p className="mt-1 text-sm text-[var(--admin-text-secondary)]">
                   Orders are held (authorized, not captured) and screened by Kount when the client ID, API key and
                   Stripe webhook signing secret are all set. Blank fields use the Worker environment or the default.
-                  Retries and fallback apply from the next checkout.
+                  Retries and fallback apply from the next checkout. The environment selects the Kount token
+                  server, API host and device-collection environment together.
                 </p>
               </div>
             )}
@@ -159,7 +160,20 @@ export function DeveloperSettingsPage() {
             >
               {field.label}
             </label>
-            {useSelect ? renderModelSelect(field, modelKeys) : (
+            {field.options ? (
+              <select
+                id={`ds-${field.key}`}
+                value={drafts[field.key] ?? (field.value || field.defaultValue || '')}
+                onChange={(e) => setDrafts({ ...drafts, [field.key]: e.target.value })}
+                className="admin-select mt-1 w-full"
+              >
+                {field.options.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}{o.value === field.defaultValue ? ' (default)' : ''}
+                  </option>
+                ))}
+              </select>
+            ) : useSelect ? renderModelSelect(field, modelKeys) : (
             <Input
               id={`ds-${field.key}`}
               type={field.secret ? 'password' : 'text'}
@@ -177,7 +191,7 @@ export function DeveloperSettingsPage() {
             <p className="mt-1 text-xs text-[var(--admin-text-muted)]">
               {field.source === 'settings' && 'Set here.'}
               {field.source === 'environment' && 'Currently from the Worker environment.'}
-              {field.source === 'unset' && 'Not configured.'}
+              {field.source === 'unset' && (field.defaultValue ? 'Using the default.' : 'Not configured.')}
             </p>
           </div>
           )

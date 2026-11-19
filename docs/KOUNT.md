@@ -3,10 +3,18 @@
 OpenShop can screen orders with Kount Payments Fraud v2. Screening is off
 until it is configured, and checkout works as before until then.
 
-The integration targets the **Kount Sandbox** by default:
+One setting, `KOUNT_ENVIRONMENT`, selects the Kount environment. It sets the
+token server, the API host and the device-collection environment together, so
+they can't point at different environments:
 
-- Token URL: `https://login-uat.equifax.com/as/token`
-- API base: `https://api-sandbox.kount.com`
+| `KOUNT_ENVIRONMENT` | Token URL | API host | Device collector |
+|---|---|---|---|
+| `SANDBOX` (default) | `https://login-uat.equifax.com/as/token` | `https://api-sandbox.kount.com` | `TEST` (`tst.kaptcha.com`) |
+| `PRODUCTION` | `https://login.equifax.com/as/token` | `https://api.kount.com` | `PROD` (`ssl.kaptcha.com`) |
+
+Endpoints are taken from the Payments Fraud v2.0 Integration Guide. Sandbox and
+Production use separate credentials, so change the client ID and API key
+together with the environment.
 
 ## How it works
 
@@ -87,6 +95,7 @@ and an invalid value is refused rather than silently replaced.
 
 | Setting | Secret | Default | Notes |
 |---|---|---|---|
+| `KOUNT_ENVIRONMENT` | no | `SANDBOX` | `SANDBOX` or `PRODUCTION` (a dropdown in Developer Settings); see the table above |
 | `KOUNT_CLIENT_ID` | no | — | Also used by browser DDC |
 | `KOUNT_API_KEY` | **yes** | — | Raw portal API key, sent as `Basic <key>` to the token endpoint |
 | `STRIPE_WEBHOOK_SECRET` | **yes** | — | Required. Without it checkouts are **not** held, because nothing would capture them |
@@ -94,9 +103,6 @@ and an invalid value is refused rather than silently replaced.
 | `KOUNT_FALLBACK_DECISION` | no | `APPROVE` | `APPROVE` or `DECLINE`; used only when evaluation ends without a usable decision |
 | `KOUNT_CHANNEL` | no | — | Sent as `channel` when set |
 | `KOUNT_SHIPPING_METHOD` | no | — | `STANDARD`, `EXPRESS`, `SAME_DAY`, `NEXT_DAY` or `SECOND_DAY`. Sent as `fulfillment[].shipping.method`; omitted when blank |
-| `KOUNT_DDC_ENVIRONMENT` | no | `TEST` | `TEST` or `PROD` collector |
-| `KOUNT_TOKEN_URL` | no | Sandbox | https only |
-| `KOUNT_API_BASE_URL` | no | Sandbox | https only |
 
 Kount settings are **not** writable by the store agent. A prompt must not be
 able to change fraud policy.

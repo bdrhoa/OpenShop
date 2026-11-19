@@ -84,6 +84,8 @@ export class DeveloperSettingsService {
         secret: Boolean(field.secret),
         isPassword: Boolean(field.password),
         group: field.group || 'general',
+        options: field.options,
+        defaultValue: field.defaultValue,
         configured: inKv || inEnv,
         source: inKv ? 'settings' : (inEnv ? 'environment' : 'unset'),
         // Non-secret values are safe to show so they can be edited in place.

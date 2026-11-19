@@ -252,9 +252,33 @@ describe('Kount integration', () => {
       const res = await executeRequest(app, createTestRequest('/api/admin/developer-settings', { headers: createAdminHeaders(adminToken) }), env)
       const body = await parseJsonResponse(res)
       const keys = body.fields.filter((f) => f.group === 'kount').map((f) => f.key)
-      expect(keys).toEqual(expect.arrayContaining(['KOUNT_CLIENT_ID', 'KOUNT_API_KEY', 'KOUNT_MAX_RETRIES', 'KOUNT_FALLBACK_DECISION', 'KOUNT_CHANNEL', 'KOUNT_SHIPPING_METHOD', 'KOUNT_DDC_ENVIRONMENT', 'STRIPE_WEBHOOK_SECRET']))
+      expect(keys).toEqual(expect.arrayContaining(['KOUNT_CLIENT_ID', 'KOUNT_API_KEY', 'KOUNT_MAX_RETRIES', 'KOUNT_FALLBACK_DECISION', 'KOUNT_CHANNEL', 'KOUNT_SHIPPING_METHOD', 'KOUNT_ENVIRONMENT', 'STRIPE_WEBHOOK_SECRET']))
       expect(JSON.stringify(body)).not.toContain('kount-secret-key')
       expect(JSON.stringify(body)).not.toContain(WEBHOOK_SECRET)
+
+      const envField = body.fields.find((f) => f.key === 'KOUNT_ENVIRONMENT')
+      expect(envField.options).toEqual([{ value: 'SANDBOX', label: 'Sandbox' }, { value: 'PRODUCTION', label: 'Production' }])
+      expect(envField.defaultValue).toBe('SANDBOX')
+      expect(body.fields.map((f) => f.key)).not.toEqual(expect.arrayContaining(['KOUNT_TOKEN_URL']))
+    })
+
+    it('rejects an unknown environment', async () => {
+      const res = await put({ KOUNT_ENVIRONMENT: 'STAGING' })
+      expect(res.status).toBe(400)
+      expect((await parseJsonResponse(res)).error).toMatch(/KOUNT_ENVIRONMENT/)
+    })
+
+    it('Production sends token and order calls to the production hosts', async () => {
+      env.KOUNT_ENVIRONMENT = 'PRODUCTION'
+      const fetchMock = vi.fn(async (url) => (String(url).includes('/as/token')
+        ? new Response(JSON.stringify({ access_token: 'tok', expires_in: 1200 }), { status: 200 })
+        : new Response(JSON.stringify({ order: { orderId: 'K1', riskInquiry: { decision: 'APPROVE' } } }), { status: 200 })))
+      vi.stubGlobal('fetch', fetchMock)
+      const event = { id: 'evt_prod', type: 'checkout.session.completed', data: { object: SESSION } }
+      expect((await executeRequest(app, await signedWebhook(event), env)).status).toBe(200)
+      const urls = fetchMock.mock.calls.map(([u]) => String(u))
+      expect(urls[0]).toBe('https://login.equifax.com/as/token')
+      expect(urls[1]).toBe('https://api.kount.com/commerce/v2/orders?riskInquiry=true')
     })
 
     it('rejects invalid policy values with the same rules as env', async () => {
@@ -266,14 +290,22 @@ describe('Kount integration', () => {
     })
 
     it('a saved value takes effect on the next operation; clearing it restores env', async () => {
-      expect((await put({ KOUNT_DDC_ENVIRONMENT: 'PROD', KOUNT_FALLBACK_DECISION: 'DECLINE', KOUNT_MAX_RETRIES: '0', KOUNT_SHIPPING_METHOD: 'NEXT_DAY' })).status).toBe(200)
+      expect((await put({ KOUNT_ENVIRONMENT: 'PRODUCTION', KOUNT_FALLBACK_DECISION: 'DECLINE', KOUNT_MAX_RETRIES: '0', KOUNT_SHIPPING_METHOD: 'NEXT_DAY' })).status).toBe(200)
       let config = await parseJsonResponse(await executeRequest(app, createTestRequest('/api/kount/config'), env))
       expect(config.environment).toBe('PROD')
 
       const status = await parseJsonResponse(await executeRequest(app, createTestRequest('/api/admin/kount/status', { headers: createAdminHeaders(adminToken) }), env))
-      expect(status).toEqual(expect.objectContaining({ fallbackDecision: 'DECLINE', maxRetries: 0, shippingMethod: 'NEXT_DAY', holdingCheckouts: true }))
+      expect(status).toEqual(expect.objectContaining({
+        fallbackDecision: 'DECLINE',
+        maxRetries: 0,
+        shippingMethod: 'NEXT_DAY',
+        holdingCheckouts: true,
+        environment: 'PRODUCTION',
+        tokenUrl: 'https://login.equifax.com/as/token',
+        apiBaseUrl: 'https://api.kount.com',
+      }))
 
-      await put({ KOUNT_DDC_ENVIRONMENT: '' })
+      await put({ KOUNT_ENVIRONMENT: '' })
       config = await parseJsonResponse(await executeRequest(app, createTestRequest('/api/kount/config'), env))
       expect(config.environment).toBe('TEST')
     })
