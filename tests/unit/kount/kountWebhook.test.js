@@ -3,6 +3,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import {
   KountWebhookError,
+  isTestPing,
   normalizePublicKey,
   parseKountWebhookEvent,
   validatePublicKey,
@@ -79,6 +80,15 @@ describe('verifyKountWebhook', () => {
 
   it('reports an unusable public key as a server error', async () => {
     await expectError(verify({ publicKey: 'MIIBnotakey' }), 500, 'bad_public_key')
+  })
+})
+
+describe('isTestPing', () => {
+  it('recognises Kount portal test pings only', () => {
+    expect(isTestPing({ eventType: 'Webhook.TestPing' })).toBe(true)
+    expect(isTestPing({ eventType: 'webhook.testping' })).toBe(true)
+    expect(isTestPing(SAMPLE_EVENT)).toBe(false)
+    expect(isTestPing(null)).toBe(false)
   })
 })
 

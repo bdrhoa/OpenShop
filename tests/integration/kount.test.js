@@ -344,6 +344,32 @@ describe('Kount integration', () => {
       expect(res.status).toBe(503)
     })
 
+    const unsigned = (body) => createTestRequest('/api/kount-webhook', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'Go-http-client/1.1' },
+    })
+
+    it('acknowledges Kount\'s unsigned Webhook.TestPing without any action', async () => {
+      const res = await executeRequest(app, unsigned({ id: 'ping-1', eventType: 'Webhook.TestPing' }), env)
+      expect(res.status).toBe(200)
+      expect(await parseJsonResponse(res)).toEqual({ received: true, outcome: 'test_ping' })
+      expect(stripeMocks.paymentIntents.capture).not.toHaveBeenCalled()
+      expect(stripeMocks.paymentIntents.cancel).not.toHaveBeenCalled()
+    })
+
+    it('still rejects an unsigned decision event and does nothing', async () => {
+      await reviewOrder()
+      const res = await executeRequest(app, unsigned({ ...SAMPLE_EVENT, kountOrderId: 'K1', newValue: 'APPROVE' }), env)
+      expect(res.status).toBe(400)
+      expect(stripeMocks.paymentIntents.capture).not.toHaveBeenCalled()
+    })
+
+    it('acknowledges a signed test ping too', async () => {
+      const res = await executeRequest(app, await kountDelivery({ id: 'ping-2', eventType: 'Webhook.TestPing' }), env)
+      expect((await parseJsonResponse(res)).outcome).toBe('test_ping')
+    })
+
     it('rejects a bad signature (401) and a stale timestamp (400)', async () => {
       const other = await createSigner()
       expect((await executeRequest(app, await kountDelivery(SAMPLE_EVENT, { signWith: other }), env)).status).toBe(401)

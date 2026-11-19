@@ -155,6 +155,7 @@ How a delivery is handled:
 
 | Check | Result |
 |---|---|
+| Kount portal **Webhook.TestPing** (sent unsigned) | `200`, `outcome: "test_ping"`, no action |
 | No public key configured | `503` |
 | Missing `X-Event-Timestamp` / `X-Event-Signature`, empty or non-JSON body | `400` |
 | Timestamp older than 45 min (Kount's suggested window) or more than 5 min in the future | `400` |
@@ -162,6 +163,15 @@ How a delivery is handled:
 | Status/decision changed to APPROVE or DECLINE on an open review | Capture or release, then `200` |
 | Same event ID again, unknown order, order not in review, other events | `200` (acknowledged, no action) |
 | Capture or release failed in Stripe | `500`, so Kount retries; the retry completes it |
+
+**Test ping.** A live Sandbox `Webhook.TestPing` arrived with no
+`X-Event-Signature` or `X-Event-Timestamp` header, only standard headers and
+`User-Agent: Go-http-client/1.1`. An unsigned request is therefore accepted only
+if its body is a test ping, and then it is acknowledged and ignored. Any other
+unsigned request, including an unsigned decision, is rejected and never acted
+on. It is still unconfirmed whether real decision events arrive signed with
+these header names. Each rejection logs the request's header names (not values)
+and its event type, so a different header scheme shows up in `wrangler tail`.
 
 Orders are matched by `kountOrderId`, falling back to `merchantOrderId`. The
 expected shape follows Kount's sample event (`Order.StatusChange` with

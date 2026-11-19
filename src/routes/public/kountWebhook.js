@@ -1,6 +1,7 @@
 // Kount webhook receiver: decisions made by reviewers in the Kount portal.
 //
 // POST /api/kount-webhook
+//   - 200 for Kount's unsigned Webhook.TestPing (acknowledged, no action)
 //   - 503 when KOUNT_WEBHOOK_PUBLIC_KEY is not configured
 //   - 400 for missing headers, stale or future timestamps, invalid JSON
 //   - 401 for a bad signature
@@ -11,7 +12,7 @@ import { getKVNamespace } from '../../utils/kv.js'
 import { resolveSetting } from '../../services/DeveloperSettingsService.js'
 import { StripeService } from '../../services/StripeService.js'
 import { KountOrderService, resolveKountConfig } from '../../services/KountOrderService.js'
-import { KountWebhookError, parseKountWebhookEvent, verifyKountWebhook } from '../../lib/kountWebhook.js'
+import { KountWebhookError, isTestPing, parseKountWebhookEvent, tryParseJson, verifyKountWebhook } from '../../lib/kountWebhook.js'
 
 const router = new Hono()
 
@@ -29,24 +30,41 @@ router.post('/kount-webhook', async (c) => {
   }
 
   const rawBody = new Uint8Array(await c.req.arrayBuffer())
+  const signature = c.req.header('X-Event-Signature') || null
+  const timestamp = c.req.header('X-Event-Timestamp') || null
+
+  // Kount's portal test ping arrives unsigned. Acknowledge it so the portal
+  // shows the endpoint as reachable; it carries no order data and nothing is
+  // done with it. Any other unsigned request is rejected below.
+  if (!signature && !timestamp) {
+    const body = tryParseJson(rawBody)
+    if (isTestPing(body)) {
+      console.log(`[Kount] webhook test ping received (${body.eventType || body.type}); acknowledged without action`)
+      return c.json({ received: true, outcome: 'test_ping' })
+    }
+  }
+
   let event
   try {
     await verifyKountWebhook({
       publicKey: config.webhookPublicKey,
-      signature: c.req.header('X-Event-Signature') || null,
-      timestamp: c.req.header('X-Event-Timestamp') || null,
+      signature,
+      timestamp,
       rawBody,
     })
-    let body
-    try {
-      body = JSON.parse(new TextDecoder().decode(rawBody))
-    } catch {
-      throw new KountWebhookError('Invalid JSON payload', 400, 'invalid_json')
+    const body = tryParseJson(rawBody)
+    if (body === null) throw new KountWebhookError('Invalid JSON payload', 400, 'invalid_json')
+    if (isTestPing(body)) {
+      return c.json({ received: true, outcome: 'test_ping' })
     }
     event = parseKountWebhookEvent(body)
   } catch (error) {
     if (error instanceof KountWebhookError) {
-      console.warn(`[Kount] webhook rejected: ${error.code}`)
+      // Header names only (never values) and the event type, so a sender that
+      // uses different header names is easy to spot in the logs.
+      const headerNames = [...c.req.raw.headers.keys()].filter((k) => !k.startsWith('cf-')).sort().join(', ')
+      const eventType = tryParseJson(rawBody)?.eventType || 'unknown'
+      console.warn(`[Kount] webhook rejected: ${error.code} (eventType ${eventType}; headers: ${headerNames})`)
       return c.json({ error: error.message }, error.status)
     }
     throw error

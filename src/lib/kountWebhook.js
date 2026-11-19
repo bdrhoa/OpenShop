@@ -102,6 +102,24 @@ export async function verifyKountWebhook({ publicKey, signature, timestamp, rawB
 }
 
 /**
+ * True for Kount's portal connectivity test ("Webhook.TestPing"). Kount sends
+ * it without X-Event-Signature / X-Event-Timestamp (observed on a live Sandbox
+ * delivery), so it can only be acknowledged, never acted on.
+ */
+export function isTestPing(body) {
+  return Boolean(body && typeof body === 'object' && /test\s*ping/i.test(String(body.eventType || body.type || '')))
+}
+
+/** Parse a raw body as JSON, or null. */
+export function tryParseJson(rawBody) {
+  try {
+    return JSON.parse(new TextDecoder().decode(rawBody))
+  } catch {
+    return null
+  }
+}
+
+/**
  * Interpret a verified event. Only a status/decision change to APPROVE or
  * DECLINE is actionable; everything else is acknowledged and ignored.
  *
