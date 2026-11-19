@@ -6,6 +6,7 @@ import {
   buildStatusUpdatePayload,
   mapAvs,
   mapPayment,
+  resolveShippingMethod,
   parseEvaluationResponse,
   parseRetryAfter,
   splitName,
@@ -76,6 +77,28 @@ describe('mapPayment', () => {
 
   it('sends NONE without card details', () => {
     expect(mapPayment({})).toEqual({ type: 'NONE' })
+  })
+})
+
+describe('shipping method', () => {
+  const build = (extra) => buildEvaluationPayload({ merchantOrderId: 'o', session: SESSION, lineItems: LINE_ITEMS, ...extra }).fulfillment[0].shipping
+
+  it('sends the store-wide method on shipped orders', () => {
+    expect(build({ shippingMethod: 'STANDARD' })).toEqual({ amount: '300', method: 'STANDARD' })
+  })
+
+  it('omits the method when none is configured', () => {
+    expect(build({})).toEqual({ amount: '300' })
+  })
+
+  it('prefers a Stripe shipping rate tagged with a valid Kount method', () => {
+    expect(build({ shippingMethod: 'STANDARD', shippingRate: { id: 'shr_1', metadata: { kount_shipping_method: 'next_day' } } }).method).toBe('NEXT_DAY')
+  })
+
+  it('ignores untagged or invalid shipping-rate metadata', () => {
+    expect(resolveShippingMethod({ shippingRate: { metadata: { kount_shipping_method: 'OVERNIGHT' } }, defaultMethod: 'EXPRESS' })).toBe('EXPRESS')
+    expect(resolveShippingMethod({ shippingRate: 'shr_unexpanded', defaultMethod: undefined })).toBeUndefined()
+    expect(resolveShippingMethod({ defaultMethod: 'FAST' })).toBeUndefined()
   })
 })
 
@@ -187,5 +210,8 @@ describe('Kount configuration', () => {
     expect(validateKountSetting('KOUNT_API_KEY', 'Basic abc')).toMatch(/Basic/)
     expect(validateKountSetting('KOUNT_TOKEN_URL', 'http://insecure.test')).toMatch(/https/)
     expect(validateKountSetting('KOUNT_DDC_ENVIRONMENT', 'STAGING')).toMatch(/TEST, PROD/)
+    expect(() => buildKountConfig({ KOUNT_SHIPPING_METHOD: 'OVERNIGHT' })).toThrow(/KOUNT_SHIPPING_METHOD/)
+    expect(buildKountConfig({ KOUNT_SHIPPING_METHOD: 'SECOND_DAY' }).shippingMethod).toBe('SECOND_DAY')
+    expect(buildKountConfig({}).shippingMethod).toBe('')
   })
 })

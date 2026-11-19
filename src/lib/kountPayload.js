@@ -9,7 +9,7 @@
 // card data. The BIN is omitted rather than invented. Timestamp fields are
 // omitted as well: the published schema's date-time pattern rejects its own
 // RFC 3339 examples (documented conflict "timestamp-pattern").
-import { KOUNT_DECISIONS } from '../config/kount.js'
+import { KOUNT_DECISIONS, KOUNT_SHIPPING_METHODS } from '../config/kount.js'
 
 const KOUNT_CARD_BRANDS = {
   visa: 'visa',
@@ -124,6 +124,20 @@ export function mapLineItems(lineItems = []) {
   }))
 }
 
+/**
+ * Kount shipping method for the order. A Stripe shipping rate chosen at
+ * checkout wins when its metadata names a valid Kount method
+ * (`kount_shipping_method`); otherwise the store-wide setting is used.
+ * Returns undefined when neither is set, so nothing is guessed.
+ */
+export function resolveShippingMethod({ shippingRate, defaultMethod }) {
+  const fromRate = shippingRate && typeof shippingRate === 'object'
+    ? String(shippingRate.metadata?.kount_shipping_method || '').trim().toUpperCase()
+    : ''
+  if (KOUNT_SHIPPING_METHODS.includes(fromRate)) return fromRate
+  return KOUNT_SHIPPING_METHODS.includes(defaultMethod) ? defaultMethod : undefined
+}
+
 function shippingDetails(session) {
   return session?.collected_information?.shipping_details || session?.shipping_details || null
 }
@@ -141,6 +155,8 @@ export function buildEvaluationPayload({
   deviceSessionId,
   userIp,
   channel,
+  shippingMethod,
+  shippingRate,
 }) {
   const items = mapLineItems(lineItems)
   const itemRefs = items.map((i) => ({ id: i.id, quantity: i.quantity }))
@@ -178,7 +194,13 @@ export function buildEvaluationPayload({
 
   const fulfillment = compact({
     type: 'SHIPPED',
-    shipping: totals.amount_shipping !== undefined ? { amount: minorUnits(totals.amount_shipping) } : undefined,
+    shipping: compact({
+      amount: totals.amount_shipping !== undefined ? minorUnits(totals.amount_shipping) : undefined,
+      method: resolveShippingMethod({
+        shippingRate: shippingRate || session?.shipping_cost?.shipping_rate,
+        defaultMethod: shippingMethod,
+      }),
+    }),
     recipientPerson: shipping ? mapPerson({ name: shipping.name, address: shipping.address, email: customer.email, phone: customer.phone }) : undefined,
     items: itemRefs.length ? itemRefs : undefined,
     status: 'PENDING',

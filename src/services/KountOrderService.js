@@ -198,6 +198,7 @@ export class KountOrderService {
       const lineItems = await this.stripe.checkout.sessions.listLineItems(session.id, { limit: 100, expand: ['data.price'] })
       const context = await this.getCheckoutContext(record.merchantOrderId)
       const charge = typeof paymentIntent.latest_charge === 'object' ? paymentIntent.latest_charge : null
+      const shippingRate = await this.getShippingRate(session)
       record.chargeId = charge?.id || null
       const payload = buildEvaluationPayload({
         merchantOrderId: record.merchantOrderId,
@@ -208,6 +209,8 @@ export class KountOrderService {
         deviceSessionId: context.deviceSessionId,
         userIp: context.userIp,
         channel: this.config.channel,
+        shippingMethod: this.config.shippingMethod,
+        shippingRate,
       })
 
       const evaluation = await this.client.evaluateWithFallback(payload)
@@ -223,6 +226,22 @@ export class KountOrderService {
     await this.applyDecision(record, paymentIntent)
     await this.flushOrderReporting(record)
     return { record }
+  }
+
+  /**
+   * The Stripe shipping rate chosen at checkout, if the store uses shipping
+   * options. OpenShop checkout has none today, so this is usually null.
+   */
+  async getShippingRate(session) {
+    const rate = session?.shipping_cost?.shipping_rate
+    if (!rate) return null
+    if (typeof rate === 'object') return rate
+    try {
+      return await this.stripe.shippingRates.retrieve(rate)
+    } catch (error) {
+      console.warn(`[Kount] could not load shipping rate ${rate}: ${error?.message || error}`)
+      return null
+    }
   }
 
   /** Bring the payment in line with the persisted decision. Idempotent. */

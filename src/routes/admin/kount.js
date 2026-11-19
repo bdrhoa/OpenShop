@@ -60,6 +60,7 @@ router.get('/status', asyncHandler(async (c) => {
     fallbackDecision: config?.fallbackDecision ?? null,
     ddcEnvironment: config?.ddcEnvironment ?? null,
     channel: config?.channel || null,
+    shippingMethod: config?.shippingMethod || null,
     apiBaseUrl: config?.apiBaseUrl ?? null,
     tokenUrl: config?.tokenUrl ?? null,
     queuedReportingJobs: queued,

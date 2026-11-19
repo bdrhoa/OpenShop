@@ -16,6 +16,8 @@ export const KOUNT_DEFAULT_FALLBACK_DECISION = 'APPROVE'
 export const KOUNT_DDC_ENVIRONMENTS = ['TEST', 'PROD']
 export const KOUNT_DEFAULT_DDC_ENVIRONMENT = 'TEST'
 export const KOUNT_DECISIONS = ['APPROVE', 'DECLINE', 'REVIEW']
+// Kount fulfillment shipping.method enumeration.
+export const KOUNT_SHIPPING_METHODS = ['STANDARD', 'EXPRESS', 'SAME_DAY', 'NEXT_DAY', 'SECOND_DAY']
 
 // Time budgets (ms). The evaluation runs inside a Stripe webhook delivery, so
 // the whole operation, including token refresh and backoff sleeps, must
@@ -38,6 +40,7 @@ export const KOUNT_SETTING_FIELDS = [
   { key: 'KOUNT_MAX_RETRIES', label: `Kount max retries (0–${KOUNT_MAX_RETRIES_LIMIT}, default ${KOUNT_DEFAULT_MAX_RETRIES})`, secret: false },
   { key: 'KOUNT_FALLBACK_DECISION', label: 'Kount fallback decision (APPROVE or DECLINE, default APPROVE)', secret: false },
   { key: 'KOUNT_CHANNEL', label: 'Kount channel (optional)', secret: false },
+  { key: 'KOUNT_SHIPPING_METHOD', label: `Kount shipping method for shipped orders (${KOUNT_SHIPPING_METHODS.join(', ')}; blank = not sent)`, secret: false },
   { key: 'KOUNT_DDC_ENVIRONMENT', label: 'Kount device collection environment (TEST or PROD)', secret: false },
   { key: 'KOUNT_TOKEN_URL', label: 'Kount token URL (default: Sandbox)', secret: false },
   { key: 'KOUNT_API_BASE_URL', label: 'Kount API base URL (default: Sandbox)', secret: false },
@@ -72,6 +75,10 @@ export function validateKountSetting(key, value) {
       return KOUNT_FALLBACK_DECISIONS.includes(v)
         ? null
         : `KOUNT_FALLBACK_DECISION must be one of ${KOUNT_FALLBACK_DECISIONS.join(', ')}`
+    case 'KOUNT_SHIPPING_METHOD':
+      return KOUNT_SHIPPING_METHODS.includes(v)
+        ? null
+        : `KOUNT_SHIPPING_METHOD must be one of ${KOUNT_SHIPPING_METHODS.join(', ')}`
     case 'KOUNT_DDC_ENVIRONMENT':
       return KOUNT_DDC_ENVIRONMENTS.includes(v)
         ? null
@@ -120,6 +127,7 @@ export function buildKountConfig(raw = {}) {
     maxRetries: blank(raw.KOUNT_MAX_RETRIES) ? KOUNT_DEFAULT_MAX_RETRIES : Number(str('KOUNT_MAX_RETRIES')),
     fallbackDecision: str('KOUNT_FALLBACK_DECISION') || KOUNT_DEFAULT_FALLBACK_DECISION,
     channel: str('KOUNT_CHANNEL'),
+    shippingMethod: str('KOUNT_SHIPPING_METHOD'),
     ddcEnvironment: str('KOUNT_DDC_ENVIRONMENT') || KOUNT_DEFAULT_DDC_ENVIRONMENT,
     tokenUrl: str('KOUNT_TOKEN_URL') || KOUNT_SANDBOX_TOKEN_URL,
     apiBaseUrl: (str('KOUNT_API_BASE_URL') || KOUNT_SANDBOX_API_BASE_URL).replace(/\/+$/, ''),

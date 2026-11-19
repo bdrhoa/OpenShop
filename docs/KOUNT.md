@@ -93,6 +93,7 @@ and an invalid value is refused rather than silently replaced.
 | `KOUNT_MAX_RETRIES` | no | `2` | 0–3 extra attempts after the first, for every Kount API call |
 | `KOUNT_FALLBACK_DECISION` | no | `APPROVE` | `APPROVE` or `DECLINE`; used only when evaluation ends without a usable decision |
 | `KOUNT_CHANNEL` | no | — | Sent as `channel` when set |
+| `KOUNT_SHIPPING_METHOD` | no | — | `STANDARD`, `EXPRESS`, `SAME_DAY`, `NEXT_DAY` or `SECOND_DAY`. Sent as `fulfillment[].shipping.method`; omitted when blank |
 | `KOUNT_DDC_ENVIRONMENT` | no | `TEST` | `TEST` or `PROD` collector |
 | `KOUNT_TOKEN_URL` | no | Sandbox | https only |
 | `KOUNT_API_BASE_URL` | no | Sandbox | https only |
@@ -190,6 +191,13 @@ Confirm with Kount that `TOKEN` + Stripe fingerprint is treated as intended for
 your account.
 
 The card **BIN** is not exposed by Stripe and is omitted rather than derived.
+
+**Shipping method.** OpenShop checkout offers no shipping options, so there is
+no per-order method. `fulfillment[].shipping.method` comes from the store-wide
+`KOUNT_SHIPPING_METHOD` and is omitted when that is blank. If Stripe shipping
+rates are added to checkout later, a chosen rate whose metadata has
+`kount_shipping_method` set to a valid Kount method takes precedence. Rates
+without that tag fall back to the store-wide setting.
 Timestamps are omitted because the published schema's date-time pattern
 rejects its own RFC 3339 examples.
 

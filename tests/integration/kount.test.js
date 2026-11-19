@@ -252,7 +252,7 @@ describe('Kount integration', () => {
       const res = await executeRequest(app, createTestRequest('/api/admin/developer-settings', { headers: createAdminHeaders(adminToken) }), env)
       const body = await parseJsonResponse(res)
       const keys = body.fields.filter((f) => f.group === 'kount').map((f) => f.key)
-      expect(keys).toEqual(expect.arrayContaining(['KOUNT_CLIENT_ID', 'KOUNT_API_KEY', 'KOUNT_MAX_RETRIES', 'KOUNT_FALLBACK_DECISION', 'KOUNT_CHANNEL', 'KOUNT_DDC_ENVIRONMENT', 'STRIPE_WEBHOOK_SECRET']))
+      expect(keys).toEqual(expect.arrayContaining(['KOUNT_CLIENT_ID', 'KOUNT_API_KEY', 'KOUNT_MAX_RETRIES', 'KOUNT_FALLBACK_DECISION', 'KOUNT_CHANNEL', 'KOUNT_SHIPPING_METHOD', 'KOUNT_DDC_ENVIRONMENT', 'STRIPE_WEBHOOK_SECRET']))
       expect(JSON.stringify(body)).not.toContain('kount-secret-key')
       expect(JSON.stringify(body)).not.toContain(WEBHOOK_SECRET)
     })
@@ -262,15 +262,16 @@ describe('Kount integration', () => {
       expect(res.status).toBe(400)
       expect((await parseJsonResponse(res)).error).toMatch(/KOUNT_FALLBACK_DECISION/)
       expect((await put({ KOUNT_MAX_RETRIES: '7' })).status).toBe(400)
+      expect((await put({ KOUNT_SHIPPING_METHOD: 'OVERNIGHT' })).status).toBe(400)
     })
 
     it('a saved value takes effect on the next operation; clearing it restores env', async () => {
-      expect((await put({ KOUNT_DDC_ENVIRONMENT: 'PROD', KOUNT_FALLBACK_DECISION: 'DECLINE', KOUNT_MAX_RETRIES: '0' })).status).toBe(200)
+      expect((await put({ KOUNT_DDC_ENVIRONMENT: 'PROD', KOUNT_FALLBACK_DECISION: 'DECLINE', KOUNT_MAX_RETRIES: '0', KOUNT_SHIPPING_METHOD: 'NEXT_DAY' })).status).toBe(200)
       let config = await parseJsonResponse(await executeRequest(app, createTestRequest('/api/kount/config'), env))
       expect(config.environment).toBe('PROD')
 
       const status = await parseJsonResponse(await executeRequest(app, createTestRequest('/api/admin/kount/status', { headers: createAdminHeaders(adminToken) }), env))
-      expect(status).toEqual(expect.objectContaining({ fallbackDecision: 'DECLINE', maxRetries: 0, holdingCheckouts: true }))
+      expect(status).toEqual(expect.objectContaining({ fallbackDecision: 'DECLINE', maxRetries: 0, shippingMethod: 'NEXT_DAY', holdingCheckouts: true }))
 
       await put({ KOUNT_DDC_ENVIRONMENT: '' })
       config = await parseJsonResponse(await executeRequest(app, createTestRequest('/api/kount/config'), env))

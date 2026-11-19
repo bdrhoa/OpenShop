@@ -19,6 +19,7 @@ function fakeStripe({ status = 'requires_capture' } = {}) {
     },
     checkout: { sessions: { listLineItems: vi.fn(async () => ({ data: LINE_ITEMS })) } },
     charges: { retrieve: vi.fn(async (id) => ({ id, outcome: { type: 'issuer_declined', network_decline_code: '05' } })) },
+    shippingRates: { retrieve: vi.fn(async (id) => ({ id, metadata: { kount_shipping_method: 'EXPRESS' } })) },
   }
   return stripe
 }
@@ -62,6 +63,21 @@ describe('checkout.session.completed', () => {
     await svc.handleCheckoutCompleted(SESSION)
     const payload = client.evaluateWithFallback.mock.calls[0][0]
     expect(payload).toEqual(expect.objectContaining({ merchantOrderId: 'order-1', deviceSessionId: 'd'.repeat(32), userIp: '192.0.2.7', channel: 'WEB' }))
+  })
+
+  it('sends the configured shipping method, or the chosen Stripe shipping rate', async () => {
+    const stripe = fakeStripe()
+    const client = fakeClient(KOUNT_APPROVE)
+    const withMethod = buildKountConfig({ KOUNT_CLIENT_ID: 'c', KOUNT_API_KEY: 'k', KOUNT_SHIPPING_METHOD: 'STANDARD' })
+    await new KountOrderService({ kv, stripe, config: withMethod, client }).handleCheckoutCompleted(SESSION)
+    expect(client.evaluateWithFallback.mock.calls[0][0].fulfillment[0].shipping.method).toBe('STANDARD')
+    expect(stripe.shippingRates.retrieve).not.toHaveBeenCalled()
+
+    kv = createMockKV()
+    const client2 = fakeClient(KOUNT_APPROVE)
+    await new KountOrderService({ kv, stripe: fakeStripe(), config: withMethod, client: client2 })
+      .handleCheckoutCompleted({ ...SESSION, shipping_cost: { shipping_rate: 'shr_express' } })
+    expect(client2.evaluateWithFallback.mock.calls[0][0].fulfillment[0].shipping.method).toBe('EXPRESS')
   })
 
   it('APPROVE → captures, allows fulfillment and reports CAPTURED', async () => {
