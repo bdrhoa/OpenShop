@@ -1,4 +1,6 @@
+import { useEffect } from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+import { startKountCollection } from './lib/kountDdc'
 import { CartProvider } from './contexts/CartContext'
 import { StorefrontThemeProvider } from './contexts/StorefrontThemeContext'
 import { Storefront } from './pages/storefront/Storefront'
@@ -11,6 +13,12 @@ import { About } from './pages/storefront/About'
 import { DynamicPage } from './pages/storefront/DynamicPage'
 
 function App() {
+  // Kount device collection starts on every storefront entry (deep links
+  // included), since buyers can reach hosted Stripe Checkout from any page.
+  useEffect(() => {
+    startKountCollection()
+  }, [])
+
   return (
     <CartProvider>
       <Router>

@@ -13,7 +13,9 @@
 //     wrangler kv key delete developer:settings --namespace-id <id> --remote
 //
 import { KV_KEYS } from '../config/index.js'
+import { KOUNT_SETTING_FIELDS, KountConfigError, validateKountSetting } from '../config/kount.js'
 import { randomHex } from '../utils/crypto.js'
+import { ValidationError } from '../utils/errors.js'
 
 /**
  * Settings that may be written from the admin UI.
@@ -29,6 +31,9 @@ export const DEVELOPER_SETTING_FIELDS = [
   { key: 'OPENROUTER_MODEL', label: 'OpenRouter model (agent)', secret: false },
   { key: 'SITE_URL', label: 'Site URL', secret: false },
   { key: 'ADMIN_PASSWORD', label: 'Admin password', secret: true, password: true },
+  // Kount Payments Fraud + the Stripe webhook it depends on. Same keys,
+  // defaults and validation as the ENV path (src/config/kount.js).
+  ...KOUNT_SETTING_FIELDS.map((f) => ({ ...f, group: 'kount' })),
 ]
 
 const FIELDS_BY_KEY = new Map(DEVELOPER_SETTING_FIELDS.map((f) => [f.key, f]))
@@ -78,6 +83,8 @@ export class DeveloperSettingsService {
         label: field.label,
         secret: Boolean(field.secret),
         isPassword: Boolean(field.password),
+        group: field.group || 'general',
+        multiline: Boolean(field.multiline),
         configured: inKv || inEnv,
         source: inKv ? 'settings' : (inEnv ? 'environment' : 'unset'),
         // Non-secret values are safe to show so they can be edited in place.
@@ -93,13 +100,25 @@ export class DeveloperSettingsService {
   async update(updates) {
     const stored = await this.getRaw()
 
+    // Validate everything first so a bad value saves nothing.
+    for (const [key, value] of Object.entries(updates)) {
+      const field = FIELDS_BY_KEY.get(key)
+      if (field?.group !== 'kount') continue
+      try {
+        validateKountSetting(key, value)
+      } catch (error) {
+        if (error instanceof KountConfigError) throw new ValidationError(error.message)
+        throw error
+      }
+    }
+
     for (const [key, value] of Object.entries(updates)) {
       const field = FIELDS_BY_KEY.get(key)
       if (!field || field.password) continue // password has its own path
       if (value === '' || value === null || value === undefined) {
         delete stored[key]
       } else {
-        stored[key] = String(value)
+        stored[key] = String(value).trim()
       }
     }
 

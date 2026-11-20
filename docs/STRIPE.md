@@ -87,25 +87,31 @@ product once. A product still carrying placeholder ids is created in Stripe
 on that save, and its real product and price ids are written back to KV.
 Products created after the key is set behave normally.
 
-## Webhook Setup (Optional)
+## Webhook Setup
 
-Webhooks allow you to track order completion and payment events in real-time.
+Required when Kount fraud screening is on (see [KOUNT.md](./KOUNT.md)):
+payments are authorized with `capture_method=manual` and captured only after
+the webhook has evaluated the order.
 
 ### Setting Up Webhooks
 
 1. **Stripe Dashboard** → **Developers** → **Webhooks**
-2. **Add Endpoint**: `https://your-project.workers.dev/api/stripe-webhook`
-3. **Select Events**:
-   - `checkout.session.completed` - Fired when a checkout session is completed
-   - `payment_intent.succeeded` - Fired when a payment is successfully processed
+2. **Add Endpoint**: the URL shown in Admin → Developer settings
+   (`https://your-project.workers.dev/api/webhooks/stripe`)
+3. **Select Events**: `checkout.session.completed`, `payment_intent.payment_failed`,
+   `payment_intent.canceled`, `refund.created`, `refund.updated`, `refund.failed`
+4. Set the endpoint's signing secret as `STRIPE_WEBHOOK_SECRET`
+   (Developer settings or Worker secret).
 
 ### Webhook Security
 
-Stripe webhooks include a signature that verifies the request came from Stripe. OpenShop validates this signature to ensure webhook security.
+`src/routes/public/webhooks.js` verifies the `Stripe-Signature` header over the
+raw body with `constructEventAsync` and the Web Crypto provider. Without a
+secret the route answers 503; a bad signature answers 400.
 
 ### Handling Webhook Events
 
-You can extend OpenShop to handle webhook events by modifying the webhook handler in `src/routes/public/checkout.js`. Common use cases:
+Fraud-screening handling lives in `src/services/FraudCheckoutService.js`. Other common use cases:
 
 - Update order status in your system
 - Send confirmation emails

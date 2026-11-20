@@ -84,6 +84,30 @@ export function buildCartCheckoutMetadata(items) {
   return metadata
 }
 
+/**
+ * Checkout Session params that enable post-authorization fraud screening:
+ * the card is authorized but not captured until Kount has evaluated the
+ * order (see FraudCheckoutService). Returns {} when screening is off, so the
+ * session is created exactly as before.
+ */
+export function fraudScreeningSessionParams(fraudScreening, baseMetadata) {
+  const base = baseMetadata ? { metadata: baseMetadata } : {}
+  if (!fraudScreening) return base
+  const deviceSessionId = fraudScreening.deviceSessionId || ''
+  // Markers go on the PaymentIntent, not the session: cart sessions can
+  // already use all 50 session metadata keys (buildCartCheckoutMetadata).
+  return {
+    ...base,
+    payment_intent_data: {
+      capture_method: 'manual',
+      metadata: {
+        kount_screening: '1',
+        ...(deviceSessionId ? { kount_device_session_id: deviceSessionId } : {}),
+      },
+    },
+  }
+}
+
 export class StripeService {
   constructor(secretKey, siteUrl) {
     this.secretKey = secretKey
@@ -218,8 +242,10 @@ export class StripeService {
 
   /**
    * Create checkout session for single item
+   * @param {string} priceId
+   * @param {{ fraudScreening?: { deviceSessionId?: string } }} [options]
    */
-  async createCheckoutSession(priceId) {
+  async createCheckoutSession(priceId, options = {}) {
     this.assertCheckoutAvailable()
     return await this.stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -231,13 +257,14 @@ export class StripeService {
       billing_address_collection: 'required',
       success_url: `${this.siteUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${this.siteUrl}/`,
+      ...fraudScreeningSessionParams(options.fraudScreening),
     })
   }
 
   /**
    * Create checkout session for cart
    */
-  async createCartCheckoutSession(items) {
+  async createCartCheckoutSession(items, options = {}) {
     this.assertCheckoutAvailable()
     const lineItems = items.map(item => {
       // When using price IDs, you cannot set description, name, images, etc. directly
@@ -264,7 +291,7 @@ export class StripeService {
       billing_address_collection: 'required',
       success_url: `${this.siteUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${this.siteUrl}/`,
-      metadata: buildCartCheckoutMetadata(items),
+      ...fraudScreeningSessionParams(options.fraudScreening, buildCartCheckoutMetadata(items)),
     })
   }
 
@@ -320,6 +347,60 @@ export class StripeService {
     return await this.stripe.paymentIntents.retrieve(paymentIntentId, {
       expand: ['shipping']
     })
+  }
+
+  /**
+   * Payment intent with the card details Kount needs (fingerprint, last4,
+   * CVC/AVS checks, Radar outcome).
+   */
+  async getPaymentIntentForFraud(paymentIntentId) {
+    return await this.stripe.paymentIntents.retrieve(paymentIntentId, {
+      expand: ['latest_charge', 'payment_method'],
+    })
+  }
+
+  /** Capture an authorized payment. Idempotent per PaymentIntent. */
+  async capturePaymentIntent(paymentIntentId) {
+    return await this.stripe.paymentIntents.capture(paymentIntentId, {}, {
+      idempotencyKey: `openshop-kount-capture-${paymentIntentId}`,
+    })
+  }
+
+  /** Release an authorization (Kount DECLINE). Idempotent per PaymentIntent. */
+  async cancelPaymentIntent(paymentIntentId) {
+    return await this.stripe.paymentIntents.cancel(paymentIntentId, {
+      cancellation_reason: 'fraudulent',
+    }, {
+      idempotencyKey: `openshop-kount-cancel-${paymentIntentId}`,
+    })
+  }
+
+  /**
+   * Full refund after a verified Kount reviewer decline. Idempotent per
+   * PaymentIntent. No `reason: 'fraudulent'`: that feeds Stripe Radar and
+   * can block later test purchases from the same identities.
+   */
+  async refundPaymentIntent(paymentIntentId, checkoutSessionId) {
+    return await this.stripe.refunds.create({
+      payment_intent: paymentIntentId,
+      metadata: {
+        openshop_checkout_session: checkoutSessionId,
+        openshop_refund_cause: 'kount_reviewer_decline',
+      },
+    }, {
+      idempotencyKey: `openshop-kount-refund-${paymentIntentId}`,
+    })
+  }
+
+  /** Verify a Stripe webhook signature over the raw body (Web Crypto). */
+  async constructWebhookEvent(rawBody, signature, webhookSecret) {
+    return await this.stripe.webhooks.constructEventAsync(
+      rawBody,
+      signature,
+      webhookSecret,
+      undefined,
+      Stripe.createSubtleCryptoProvider(),
+    )
   }
 
   /**

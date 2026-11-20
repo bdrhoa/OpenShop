@@ -5,6 +5,7 @@ import { Button } from '../ui/button'
 import { formatCurrency, normalizeImageUrl } from '../../lib/utils'
 import { buildCheckoutItems } from '../../lib/checkoutPayload'
 import { goToCheckout } from '../../lib/stripe'
+import { kountCheckoutFields } from '../../lib/kountDdc'
 import { CART_MAX_ITEM_QUANTITY } from '../../config/index.js'
 import { X, Plus, Minus, ShoppingBag, Trash2 } from 'lucide-react'
 
@@ -29,7 +30,7 @@ export function Cart() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ items: checkoutItems }),
+        body: JSON.stringify({ items: checkoutItems, ...(await kountCheckoutFields()) }),
       })
 
       const session = await response.json().catch(() => ({}))

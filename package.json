@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.0.10",
+    "@kount/kount-web-client-sdk": "^2.2.4",
     "@puckeditor/core": "^0.23.0",
     "@stripe/stripe-js": "^7.9.0",
     "@tailwindcss/vite": "^4.1.13",
@@ -40,6 +41,7 @@
     "clsx": "^2.1.1",
     "hono": "^4.9.6",
     "lucide-react": "^0.543.0",
+    "p-retry": "^9.0.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.8.2",

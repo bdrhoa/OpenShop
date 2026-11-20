@@ -68,10 +68,22 @@ export function Success() {
       <div className="flex items-center justify-center min-h-screen">
         <div className="w-full max-w-md mx-4 bg-white rounded-lg shadow-md border border-slate-200 p-8 text-center">
             <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4" />
-            <h1 className="text-2xl font-bold text-slate-900 mb-2">Order Successful!</h1>
-            <p className="text-slate-600 mb-6">
-              Thank you for your purchase. You should receive a confirmation email shortly.
-            </p>
+            {sessionData?.payment_status === 'unpaid' ? (
+              <>
+                {/* Fraud screening: the card is authorized and captured after review. */}
+                <h1 className="text-2xl font-bold text-slate-900 mb-2">Order received</h1>
+                <p className="text-slate-600 mb-6">
+                  Thank you! We&apos;re confirming your payment now. You&apos;ll receive a confirmation email once it&apos;s complete.
+                </p>
+              </>
+            ) : (
+              <>
+                <h1 className="text-2xl font-bold text-slate-900 mb-2">Order Successful!</h1>
+                <p className="text-slate-600 mb-6">
+                  Thank you for your purchase. You should receive a confirmation email shortly.
+                </p>
+              </>
+            )}
 
             {sessionData && (
               <div className="bg-slate-50 rounded-lg p-4 mb-6">

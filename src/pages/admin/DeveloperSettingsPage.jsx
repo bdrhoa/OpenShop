@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { adminApiRequest, clearMustChangePassword } from '../../lib/auth'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
+import { Textarea } from '../../components/ui/textarea'
 import { AdminPageHeader } from '../../components/admin/AdminPageHeader'
 
 /**
@@ -14,6 +15,7 @@ import { AdminPageHeader } from '../../components/admin/AdminPageHeader'
  */
 export function DeveloperSettingsPage() {
   const [fields, setFields] = useState(null)
+  const [fraud, setFraud] = useState(null)
   const [drafts, setDrafts] = useState({})
   const [status, setStatus] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -28,6 +30,7 @@ export function DeveloperSettingsPage() {
     const data = await adminApiRequest('/api/admin/developer-settings')
     const body = await data.json()
     setFields(body.fields)
+    setFraud(body.fraud || null)
   }
 
   useEffect(() => {
@@ -50,7 +53,9 @@ export function DeveloperSettingsPage() {
         body: JSON.stringify(drafts),
       })
       const body = await res.json()
+      if (!res.ok) throw new Error(body.error || 'Could not save settings')
       setFields(body.fields)
+      setFraud(body.fraud || null)
       setDrafts({})
       setStatus({ ok: 'Saved. Changes take effect immediately.' })
     } catch (err) {
@@ -94,7 +99,8 @@ export function DeveloperSettingsPage() {
     )
   }
 
-  const editable = fields.filter((f) => !f.isPassword)
+  const editable = fields.filter((f) => !f.isPassword && f.group !== 'kount')
+  const kountFields = fields.filter((f) => f.group === 'kount')
 
   const MODEL_LISTS = {
     OPENROUTER_IMAGE_MODEL: { list: 'imageModels', current: 'currentImageModel' },
@@ -124,15 +130,7 @@ export function DeveloperSettingsPage() {
     )
   }
 
-  return (
-    <section className="admin-section max-w-2xl space-y-5">
-      <AdminPageHeader
-        title="Developer settings"
-        description="API keys and runtime options. Values saved here take effect immediately and override the Worker environment. Clear a field to go back to the environment value."
-      />
-
-      <div className="mt-5 space-y-4">
-        {editable.map((field) => {
+  const renderField = (field) => {
           const modelKeys = modelOptions ? MODEL_LISTS[field.key] : undefined
           const useSelect = Boolean(modelKeys) && (
             (modelOptions?.[modelKeys.list] || []).length > 0 ||
@@ -147,7 +145,18 @@ export function DeveloperSettingsPage() {
             >
               {field.label}
             </label>
-            {useSelect ? renderModelSelect(field, modelKeys) : (
+            {useSelect ? renderModelSelect(field, modelKeys) : field.multiline ? (
+            <Textarea
+              id={`ds-${field.key}`}
+              rows={5}
+              autoComplete="off"
+              spellCheck={false}
+              value={drafts[field.key] ?? field.value ?? ''}
+              placeholder="Not set"
+              onChange={(e) => setDrafts({ ...drafts, [field.key]: e.target.value })}
+              className="mt-1 font-mono text-xs"
+            />
+            ) : (
             <Input
               id={`ds-${field.key}`}
               type={field.secret ? 'password' : 'text'}
@@ -169,7 +178,63 @@ export function DeveloperSettingsPage() {
             </p>
           </div>
           )
-        })}
+  }
+
+  return (
+    <section className="admin-section max-w-2xl space-y-5">
+      <AdminPageHeader
+        title="Developer settings"
+        description="API keys and runtime options. Values saved here take effect immediately and override the Worker environment. Clear a field to go back to the environment value."
+      />
+
+      <div className="mt-5 space-y-4">
+        {editable.map(renderField)}
+      </div>
+
+      <h3 className="mt-8 text-lg font-semibold text-[var(--admin-text-primary)]">Fraud screening (Kount)</h3>
+      <p className="mt-1.5 text-sm text-[var(--admin-text-secondary)]">
+        Kount Payments Fraud (Sandbox). When the client ID and API key are set, card
+        payments are authorized but captured only after Kount evaluates the order.
+        Each setting can also come from the Worker environment variable of the same name.
+      </p>
+      {fraud?.kount?.error && (
+        <p role="alert" className="mt-2 text-sm text-[var(--admin-error)]">Configuration error: {fraud.kount.error}</p>
+      )}
+      {fraud?.kount && !fraud.kount.error && (
+        <p className="mt-2 text-xs text-[var(--admin-text-muted)]">
+          Status: {fraud.kount.enabled ? 'screening on' : 'screening off (client ID and API key required)'}
+          {' · '}effective retries {fraud.kount.maxRetries}
+          {' · '}fallback {fraud.kount.fallbackDecision}
+          {' · '}device collection {fraud.kount.ddcEnvironment}
+          {fraud.kount.webhookKeyFingerprint ? ` · webhook key ${fraud.kount.webhookKeyFingerprint}` : ' · webhook key not set'}
+        </p>
+      )}
+
+      <div className="mt-4 space-y-3 rounded-md border border-[var(--admin-border-primary)] p-3">
+        <ReadOnlyUrl
+          id="ds-kount-webhook-url"
+          label="Kount webhook URL (register in the Kount portal)"
+          value={fraud?.webhooks?.kount}
+        />
+        <ReadOnlyUrl
+          id="ds-stripe-webhook-url"
+          label="Stripe webhook URL (register in the Stripe dashboard)"
+          value={fraud?.webhooks?.stripe}
+        />
+        {fraud?.webhooks?.stripeEvents && (
+          <p className="text-xs text-[var(--admin-text-muted)]">
+            Stripe events to send: {fraud.webhooks.stripeEvents.join(', ')}
+          </p>
+        )}
+        <p className="text-xs text-[var(--admin-text-muted)]">
+          Recovery job: {fraud?.recovery?.at
+            ? `last ran ${new Date(fraud.recovery.at).toLocaleString()} (${fraud.recovery.pendingOrders} pending orders, ${fraud.recovery.deferredWaiting} deferred events, ${fraud.recovery.errors} errors)`
+            : 'has not run yet'}
+        </p>
+      </div>
+
+      <div className="mt-4 space-y-4">
+        {kountFields.map(renderField)}
       </div>
 
       {status?.error && (
@@ -236,5 +301,20 @@ export function DeveloperSettingsPage() {
         </Button>
       </form>
     </section>
+  )
+}
+
+function ReadOnlyUrl({ id, label, value }) {
+  return (
+    <div>
+      <label htmlFor={id} className="block text-sm font-medium text-[var(--admin-text-primary)]">{label}</label>
+      <Input
+        id={id}
+        readOnly
+        value={value || 'Set Site URL to see this address'}
+        onFocus={(e) => e.target.select()}
+        className="mt-1 font-mono text-xs"
+      />
+    </div>
   )
 }

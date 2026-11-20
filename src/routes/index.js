@@ -10,6 +10,7 @@ import imageProxyRouter from './public/imageProxy.js'
 import storeSettingsRouter, { contactEmailRouter } from './public/storeSettings.js'
 import imagesRouter from './public/images.js'
 import pagesRouter from './public/pages.js'
+import webhooksRouter from './public/webhooks.js'
 
 // Admin routes
 import authRouter from './admin/auth.js'
@@ -65,6 +66,7 @@ export function registerRoutes(app) {
   app.route('/api/contact-email', contactEmailRouter)
   app.route('/api/images', imagesRouter)
   app.route('/api/storefront/pages', pagesRouter)
+  app.route('/api', webhooksRouter) // /api/webhooks/stripe, /api/webhooks/kount
 
   // Admin API routes
   app.route('/api/admin', authRouter) // /api/admin/login

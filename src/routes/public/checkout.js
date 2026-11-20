@@ -2,17 +2,69 @@
 import { Hono } from 'hono'
 import { StripeService } from '../../services/StripeService.js'
 import { asyncHandler } from '../../middleware/errorHandler.js'
-import { ValidationError } from '../../utils/errors.js'
-import { parseJsonBody } from '../../utils/request.js'
+import { ValidationError, APIError } from '../../utils/errors.js'
+import { parseJsonBody, getClientIp } from '../../utils/request.js'
 import { resolveSetting } from '../../services/DeveloperSettingsService.js'
 import { getKVNamespace } from '../../utils/kv.js'
 import { CART_MAX_ITEMS, CART_MAX_ITEM_QUANTITY } from '../../config/index.js'
+import { resolveKountConfig } from '../../services/KountConfigService.js'
+import { FraudOrderStore } from '../../services/FraudOrderStore.js'
 
 const router = new Hono()
 
+// Kount device session IDs: alphanumeric plus - and _, at most 32 chars.
+const KOUNT_SESSION_ID = /^[A-Za-z0-9_-]{1,32}$/
+
+/**
+ * Fraud screening options for a new Checkout Session, or null when Kount is
+ * not configured. Invalid Kount configuration is an error, not "off": a
+ * misconfiguration must not silently disable screening.
+ */
+async function fraudScreeningFor(c, body) {
+  let config
+  try {
+    config = await resolveKountConfig(getKVNamespace(c.env), c.env)
+  } catch (error) {
+    console.error(`[checkout] Kount configuration invalid: ${error.message}`)
+    throw new APIError('Checkout is temporarily unavailable.', 503)
+  }
+  if (!config.enabled) return null
+  const candidate = typeof body.kountSessionId === 'string' ? body.kountSessionId.trim() : ''
+  if (candidate && !KOUNT_SESSION_ID.test(candidate)) {
+    throw new ValidationError('Invalid device session ID')
+  }
+  return { deviceSessionId: candidate || undefined }
+}
+
+async function saveFraudContext(c, session, fraudScreening) {
+  if (!fraudScreening) return
+  const ip = getClientIp(c)
+  await new FraudOrderStore(getKVNamespace(c.env)).saveCheckoutContext(session.id, {
+    deviceSessionId: fraudScreening.deviceSessionId || null,
+    userIp: ip === 'unknown' ? null : ip,
+  })
+}
+
+// Browser configuration for Kount device data collection. The client ID is
+// not a secret (it is embedded in the collector request); the API key and
+// webhook settings are never exposed here.
+router.get('/kount/config', asyncHandler(async (c) => {
+  try {
+    const config = await resolveKountConfig(getKVNamespace(c.env), c.env)
+    return c.json({
+      enabled: config.enabled,
+      clientId: config.enabled ? config.clientId : null,
+      environment: config.ddcEnvironment,
+    })
+  } catch {
+    return c.json({ enabled: false, clientId: null, environment: null })
+  }
+}))
+
 // Create checkout session (single item)
 router.post('/create-checkout-session', asyncHandler(async (c) => {
-  const { priceId } = await parseJsonBody(c)
+  const body = await parseJsonBody(c)
+  const { priceId } = body
   
   // Validate and trim priceId
   if (!priceId || typeof priceId !== 'string') {
@@ -39,13 +91,16 @@ router.post('/create-checkout-session', asyncHandler(async (c) => {
     await resolveSetting(getKVNamespace(c.env), c.env, 'STRIPE_SECRET_KEY'),
     await resolveSetting(getKVNamespace(c.env), c.env, 'SITE_URL'),
   )
-  const session = await stripeService.createCheckoutSession(trimmedPriceId)
+  const fraudScreening = await fraudScreeningFor(c, body)
+  const session = await stripeService.createCheckoutSession(trimmedPriceId, { fraudScreening })
+  await saveFraudContext(c, session, fraudScreening)
   return c.json({ sessionId: session.id, url: session.url })
 }))
 
 // Create cart checkout session
 router.post('/create-cart-checkout-session', asyncHandler(async (c) => {
-  const { items } = await parseJsonBody(c)
+  const body = await parseJsonBody(c)
+  const { items } = body
   
   // Validate items array
   if (!items || !Array.isArray(items) || items.length === 0) {
@@ -94,7 +149,9 @@ router.post('/create-cart-checkout-session', asyncHandler(async (c) => {
     await resolveSetting(getKVNamespace(c.env), c.env, 'STRIPE_SECRET_KEY'),
     await resolveSetting(getKVNamespace(c.env), c.env, 'SITE_URL'),
   )
-  const session = await stripeService.createCartCheckoutSession(normalizedItems)
+  const fraudScreening = await fraudScreeningFor(c, body)
+  const session = await stripeService.createCartCheckoutSession(normalizedItems, { fraudScreening })
+  await saveFraudContext(c, session, fraudScreening)
   return c.json({ sessionId: session.id, url: session.url })
 }))
 

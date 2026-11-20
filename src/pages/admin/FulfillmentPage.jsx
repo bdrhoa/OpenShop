@@ -57,7 +57,10 @@ export function FulfillmentPage() {
       const res = await adminApiRequest(`/api/admin/analytics/orders/${orderId}/fulfill`, {
         method: 'POST',
       })
-      if (!res.ok) throw new Error('Failed to fulfill order')
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || 'Failed to fulfill order')
+      }
       await fetchOrders(direction, cursorNext || cursorPrev)
       setIsModalOpen(false)
       setSelectedOrder(null)
@@ -351,6 +354,7 @@ export function FulfillmentPage() {
                         >
                           {order.fulfillment?.fulfilled ? 'Fulfilled' : 'Open'}
                         </span>
+                        <FraudBadge fraud={order.fraud} />
                         <span className="text-xs text-[var(--admin-text-muted)]">
                           {new Date(order.created * 1000).toLocaleString()}
                         </span>
@@ -457,6 +461,12 @@ export function FulfillmentPage() {
                         selectedOrder.currency?.toUpperCase() || 'USD'
                       )}
                     </p>
+                    {selectedOrder.fraud && (
+                      <p className="text-[var(--admin-text-secondary)]">
+                        <span className="text-[var(--admin-text-muted)]">Fraud screening:</span>{' '}
+                        {describeFraud(selectedOrder.fraud)}
+                      </p>
+                    )}
                     {selectedOrder.fulfillment?.fulfilled && (
                       <p className="inline-flex items-center gap-1 text-[var(--admin-success)] font-medium text-sm">
                         <Check className="h-4 w-4" />
@@ -568,7 +578,12 @@ export function FulfillmentPage() {
                   </Button>
                 )}
                 {!selectedOrder.fulfillment?.fulfilled && (
-                  <Button onClick={() => fulfillOrder(selectedOrder.id)} size="sm">
+                  <Button
+                    onClick={() => fulfillOrder(selectedOrder.id)}
+                    size="sm"
+                    disabled={Boolean(selectedOrder.fraud && !selectedOrder.fraud.fulfillmentAllowed)}
+                    title={selectedOrder.fraud && !selectedOrder.fraud.fulfillmentAllowed ? 'Held by fraud screening' : undefined}
+                  >
                     Fulfill Order
                   </Button>
                 )}
@@ -578,5 +593,38 @@ export function FulfillmentPage() {
         </div>
       )}
     </div>
+  )
+}
+
+/** Human-readable Kount screening state for an order. */
+function describeFraud(fraud) {
+  if (!fraud) return ''
+  const parts = []
+  if (fraud.decision) {
+    parts.push(fraud.decisionSource === 'fallback'
+      ? `${fraud.decision} (local fallback: ${fraud.fallbackReason}, not a Kount decision)`
+      : `Kount ${fraud.decision}`)
+  } else if (fraud.evaluationState === 'unknown') {
+    parts.push('evaluation outcome unknown — check Kount and Stripe')
+  } else {
+    parts.push('evaluation pending')
+  }
+  if (fraud.reviewStatus) parts.push(`review ${fraud.reviewStatus}`)
+  if (fraud.paymentState) parts.push(`payment ${fraud.paymentState.replace(/_/g, ' ')}`)
+  parts.push(fraud.fulfillmentAllowed ? 'fulfillment allowed' : 'fulfillment blocked')
+  if (fraud.pendingReports) parts.push(`${fraud.pendingReports} Kount update(s) not yet confirmed`)
+  if (fraud.conflicts) parts.push(`${fraud.conflicts} conflict(s) need attention`)
+  return parts.join(' · ')
+}
+
+function FraudBadge({ fraud }) {
+  if (!fraud || fraud.fulfillmentAllowed) return null
+  return (
+    <span
+      className="mb-1 inline-flex w-fit items-center rounded-full bg-[var(--admin-warning-bg,var(--admin-bg-elevated))] px-2 py-0.5 text-xs font-medium text-[var(--admin-warning,var(--admin-text-secondary))]"
+      title={describeFraud(fraud)}
+    >
+      Held: {fraud.reviewStatus === 'open' ? 'Kount review' : (fraud.decision || 'screening')}
+    </span>
   )
 }

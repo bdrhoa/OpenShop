@@ -17,6 +17,10 @@ import {
   DeveloperSettingsService,
   hashPassword,
 } from '../../services/DeveloperSettingsService.js'
+import { resolveKountConfig } from '../../services/KountConfigService.js'
+import { FraudOrderStore } from '../../services/FraudOrderStore.js'
+import { webhookUrl } from '../../config/kount.js'
+import { publicKeyFingerprint } from '../../lib/kountWebhook.js'
 
 const router = new Hono()
 
@@ -47,11 +51,53 @@ async function verifyCurrentAdminPassword(c, currentPassword) {
   return { kvNamespace, service }
 }
 
+/**
+ * Fraud-screening status for the settings screen: webhook URLs to register
+ * (display-only), effective non-secret Kount values, and the last recovery
+ * job run. Never includes secrets.
+ */
+async function fraudStatus(c) {
+  const kv = getKVNamespace(c.env)
+  const siteUrl = await resolveSetting(kv, c.env, 'SITE_URL')
+  let kount
+  try {
+    const config = await resolveKountConfig(kv, c.env)
+    kount = {
+      enabled: config.enabled,
+      maxRetries: config.maxRetries,
+      fallbackDecision: config.fallbackDecision,
+      channel: config.channel,
+      ddcEnvironment: config.ddcEnvironment,
+      webhookKeyFingerprint: await publicKeyFingerprint(config.webhookPublicKey),
+      stripeWebhookConfigured: Boolean(config.stripeWebhookSecret),
+      environment: 'sandbox',
+    }
+  } catch (error) {
+    kount = { enabled: false, error: error.message }
+  }
+  return {
+    webhooks: {
+      stripe: webhookUrl(siteUrl, 'stripe'),
+      kount: webhookUrl(siteUrl, 'kount'),
+      stripeEvents: [
+        'checkout.session.completed',
+        'payment_intent.payment_failed',
+        'payment_intent.canceled',
+        'refund.created',
+        'refund.updated',
+        'refund.failed',
+      ],
+    },
+    kount,
+    recovery: await new FraudOrderStore(kv).getRecoveryRun(),
+  }
+}
+
 // Current settings. Secret values are never returned — only whether each is
 // set, and whether it came from settings or the environment.
 router.get('/', asyncHandler(async (c) => {
   const service = new DeveloperSettingsService(getKVNamespace(c.env))
-  return c.json({ fields: await service.getPublicView(c.env) })
+  return c.json({ fields: await service.getPublicView(c.env), fraud: await fraudStatus(c) })
 }))
 
 // Update non-password settings. An empty string clears an override.
@@ -63,7 +109,7 @@ router.put('/', asyncHandler(async (c) => {
 
   const service = new DeveloperSettingsService(getKVNamespace(c.env))
   await service.update(updates)
-  return c.json({ fields: await service.getPublicView(c.env) })
+  return c.json({ fields: await service.getPublicView(c.env), fraud: await fraudStatus(c) })
 }))
 
 // Change the admin password.

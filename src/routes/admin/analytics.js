@@ -5,6 +5,8 @@ import { StripeService } from '../../services/StripeService.js'
 import { getKVNamespace } from '../../utils/kv.js'
 import { asyncHandler } from '../../middleware/errorHandler.js'
 import { resolveSetting } from '../../services/DeveloperSettingsService.js'
+import { FraudOrderStore, summarizeFraudRecord } from '../../services/FraudOrderStore.js'
+import { APIError } from '../../utils/errors.js'
 
 const router = new Hono()
 
@@ -45,6 +47,13 @@ router.get('/orders', asyncHandler(async (c) => {
     kvNamespace
   })
 
+  // Attach Kount screening state so the admin can see why an order is held.
+  const store = new FraudOrderStore(kvNamespace)
+  orders.orders = await Promise.all((orders.orders || []).map(async (order) => ({
+    ...order,
+    fraud: summarizeFraudRecord(await store.getOrder(order.id)),
+  })))
+
   return c.json(orders)
 }))
 
@@ -55,6 +64,15 @@ router.post('/orders/:orderId/fulfill', asyncHandler(async (c) => {
   
   if (!kvNamespace) {
     throw new Error('KV namespace not available')
+  }
+
+  // Server-side fulfillment gate: a screened order ships only after an
+  // APPROVE (or reviewer approval) with confirmed capture.
+  const fraudRecord = await new FraudOrderStore(kvNamespace).getOrder(orderId)
+  if (fraudRecord && !fraudRecord.fulfillmentAllowed) {
+    throw new APIError('This order is held by fraud screening and cannot be fulfilled yet.', 409, {
+      fraud: summarizeFraudRecord(fraudRecord),
+    })
   }
 
   const fulfillmentKey = `order_fulfillment:${orderId}`

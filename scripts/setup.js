@@ -269,6 +269,11 @@ binding = "ASSETS"
 [observability]
 enabled = true
 head_sampling_rate = 1
+
+# Scheduled recovery for Kount fraud screening (pending Kount status
+# reports, deferred reviewer webhooks, failed refund requests).
+[triggers]
+crons = ["*/5 * * * *"]
 `
   writeFileSync('wrangler.toml', basicWranglerConfig)
   console.log('✅ Created wrangler.toml with project name')

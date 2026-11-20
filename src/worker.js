@@ -6,6 +6,8 @@ import { errorHandler } from './middleware/errorHandler.js'
 import { verifyAdminAuth, UNAUTHENTICATED_ADMIN_PATHS } from './middleware/auth.js'
 import { productLimitMiddleware } from './middleware/productLimit.js'
 import { registerRoutes } from './routes/index.js'
+import { getKVNamespace } from './utils/kv.js'
+import { createFraudCheckoutService } from './services/FraudCheckoutService.js'
 
 const app = new Hono()
 
@@ -130,4 +132,31 @@ app.get('*', async (c) => {
   }
 })
 
-export default app
+/**
+ * Scheduled recovery for Kount fraud screening (Cloudflare cron trigger,
+ * see `[triggers]` in the site toml). Retries pending Kount status reports,
+ * applies deferred reviewer webhooks and failed refund requests, and records
+ * a run summary that Developer Settings displays. Independent of any buyer
+ * request or webhook delivery.
+ */
+export async function runScheduledRecovery(env) {
+  const kv = getKVNamespace(env)
+  if (!kv) return null
+  try {
+    const { service } = await createFraudCheckoutService(kv, env)
+    if (!service) return null
+    const summary = await service.runRecovery()
+    console.log(`[fraud-recovery] ${JSON.stringify(summary)}`)
+    return summary
+  } catch (error) {
+    console.error(`[fraud-recovery] failed: ${error?.name || 'Error'} ${error?.message || ''}`)
+    return null
+  }
+}
+
+export default {
+  fetch: (request, env, ctx) => app.fetch(request, env, ctx),
+  scheduled: (controller, env, ctx) => {
+    ctx.waitUntil(runScheduledRecovery(env))
+  },
+}

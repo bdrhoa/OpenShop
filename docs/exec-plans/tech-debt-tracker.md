@@ -6,5 +6,7 @@
 | TD-002 | Tests | More storefront component tests for cart/checkout | medium | — |
 | TD-003 | Generated | Automate `kv-data-model.md` from `KVManager` if drift recurs | low | — |
 | TD-004 | Lint | Clear remaining `npm run lint` errors in `src/` and `tests/`; then gate full lint in CI | medium | — |
+| TD-005 | Fraud | Kount evaluation claim is best-effort (KV has no CAS); move to a Durable Object for an atomic per-order claim | medium | — |
+| TD-006 | Analytics | Dashboard revenue counts uncaptured / Kount-declined Checkout Sessions; filter by captured payment | low | — |
 
 Add rows when discovering debt; remove or move to completed plans when resolved.

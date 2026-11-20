@@ -25,6 +25,12 @@ Browser (untrusted)  →  HTTPS  →  Worker (trusted)  →  KV / Stripe
 
 Applied in `src/worker.js`: CSP, `X-Frame-Options: DENY`, HSTS on HTTPS, etc.
 
+The CSP allows `https://*.kaptcha.com` (script, connect, frame) for Kount
+device data collection. Kount and Stripe webhooks are signature-verified
+(`src/routes/public/webhooks.js`); `KOUNT_API_KEY` and `STRIPE_WEBHOOK_SECRET`
+are write-only in Developer settings and never returned to the browser. Webhook
+logs are summary-only (no raw bodies, signatures or tokens). See [KOUNT.md](./KOUNT.md).
+
 ## Stripe
 
 - Secret key: Worker only.
@@ -54,6 +60,7 @@ Admin dashboard (`POST /api/admin/agent/chat`) can read and write the same store
 - [ ] No new secrets in client bundle or committed `.env`
 - [ ] Admin endpoints remain behind auth middleware
 - [ ] CSP still allows required Stripe domains if checkout changes
+- [ ] CSP still allows `*.kaptcha.com` while Kount device collection is used
 - [ ] KV writes don’t expose other tenants’ data (single namespace per store deployment)
 
 ## Reporting

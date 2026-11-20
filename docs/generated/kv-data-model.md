@@ -91,6 +91,24 @@
 
 Only known root props are kept; unknown keys are dropped during sanitization (`validatePageData`).
 
+## Fraud screening (Kount)
+
+Written by `src/services/FraudOrderStore.js`; see [KOUNT.md](../KOUNT.md).
+
+| Key | Value |
+|-----|-------|
+| `fraud:order:<cs_id>` | Order record: `evaluation` (state, decision, decisionSource, fallbackReason, attempts, kountOrderId, kountTransactionId, correlationId, possibleDuplicate), `payment` (state, refundId), `review` (status), `fulfillmentAllowed`, `buyerStatus`, `reports[]` (Kount PATCH queue: transactionStatus, state pending/confirmed/rejected/not_applicable, attempts, nextAttemptAt), `conflicts[]` |
+| `fraud:pi:<pi_id>` | → `cs_id` |
+| `fraud:kount:<kount_order_id>` | → `cs_id` |
+| `fraud:checkout:<cs_id>` | `{ deviceSessionId, userIp }` (7-day TTL) |
+| `fraud:pending:<cs_id>` | Marker: record has unconfirmed reports |
+| `fraud:deferred:<event_key>` | Verified reviewer event awaiting its order |
+| `fraud:attempt:<pi_id>:<charge_id>` | Failed-attempt data-only report (confirmed entries expire after 30 days) |
+| `fraud:event:<stripe|kount>:<id>` | Processed-event marker (30-day TTL) |
+| `fraud:recovery:last-run` | Last cron recovery summary |
+
+No PAN, CVC, tokens or raw webhook bodies are stored.
+
 ## Settings and auth
 
 Store settings and admin tokens may use additional keys via `src/services/StoreSettingsService.js` and auth middleware—grep `namespace.put` in `src/` when extending this doc.
