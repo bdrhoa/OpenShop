@@ -109,6 +109,14 @@ describe('parseKountConfig', () => {
     expect(() => parseKountConfig({ KOUNT_FALLBACK_DECISION: 'REVIEW' })).toThrow(KountConfigError)
     expect(() => parseKountConfig({ KOUNT_DDC_ENVIRONMENT: 'STAGING' })).toThrow(KountConfigError)
   })
+  it('accepts the webhook key as bare base64 (as the portal shows it) or PEM', () => {
+    const der = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA' + 'A'.repeat(300) + 'IDAQAB'
+    expect(parseKountConfig({ KOUNT_WEBHOOK_PUBLIC_KEY: der }).webhookPublicKey).toBe(der)
+    const pem = `-----BEGIN PUBLIC KEY-----\n${der}\n-----END PUBLIC KEY-----`
+    expect(parseKountConfig({ KOUNT_WEBHOOK_PUBLIC_KEY: pem }).webhookPublicKey).toBe(pem)
+    expect(() => parseKountConfig({ KOUNT_WEBHOOK_PUBLIC_KEY: 'not a key!' })).toThrow(KountConfigError)
+    expect(() => parseKountConfig({ KOUNT_WEBHOOK_PUBLIC_KEY: 'aGVsbG8gd29ybGQ=' })).toThrow(KountConfigError)
+  })
   it('accepts boundary retry values and normalizes case', () => {
     expect(parseKountConfig({ KOUNT_MAX_RETRIES: '0' }).maxRetries).toBe(0)
     expect(parseKountConfig({ KOUNT_MAX_RETRIES: '3' }).maxRetries).toBe(3)

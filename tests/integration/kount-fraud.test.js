@@ -272,6 +272,15 @@ describe('Kount fraud screening routes', () => {
       expect(JSON.stringify(data)).not.toContain('whsec_test')
     })
 
+    it('saves the webhook key in the bare base64 form the Kount portal shows', async () => {
+      const bare = key.pem.replace(/-----(BEGIN|END) PUBLIC KEY-----/g, '').replace(/\s+/g, '')
+      const res = await executeRequest(app, createTestRequest('/api/admin/developer-settings', {
+        method: 'PUT', headers, body: { KOUNT_WEBHOOK_PUBLIC_KEY: bare },
+      }), env)
+      expect(res.status).toBe(200)
+      expect((await parseJsonResponse(res)).fraud.kount.webhookKeyFingerprint).toMatch(/^[0-9a-f]{16}$/)
+    })
+
     it('validates Kount settings with the same rules as ENV and saves nothing on error', async () => {
       const bad = await executeRequest(app, createTestRequest('/api/admin/developer-settings', {
         method: 'PUT', headers, body: { KOUNT_CHANNEL: 'ok', KOUNT_FALLBACK_DECISION: 'MAYBE' },

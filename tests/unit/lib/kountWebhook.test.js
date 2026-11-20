@@ -53,6 +53,13 @@ describe('verifyKountSignature', () => {
     expect(res).toMatchObject({ ok: true, reason: 'verified' })
   })
 
+  it('verifies with the bare base64 key format the Kount portal shows', async () => {
+    const bare = pem.replace(/-----(BEGIN|END) PUBLIC KEY-----/g, '').replace(/\s+/g, '')
+    const signature = await sign(pair.privateKey, timestamp, body)
+    const res = await verifyKountSignature({ rawBody: body, signature, timestamp, publicKeyPem: bare, nowMs: now, freshness })
+    expect(res).toMatchObject({ ok: true, reason: 'verified' })
+  })
+
   it('reports cryptographic mismatch for a different key of the same size', async () => {
     const signature = await sign(otherPair.privateKey, timestamp, body)
     const res = await verifyKountSignature({ rawBody: body, signature, timestamp, publicKeyPem: pem, nowMs: now, freshness })

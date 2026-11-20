@@ -70,7 +70,7 @@ issuer authorization) → `REFUSED`/`UNKNOWN`.
 | `KOUNT_API_KEY` | **yes** | — | Token request (`Basic <key>`) |
 | `KOUNT_MAX_RETRIES` | no | `2` | Extra attempts after the first (0–3) for every Kount call |
 | `KOUNT_FALLBACK_DECISION` | no | `APPROVE` | Applied only when Evaluate Order ends with no usable decision |
-| `KOUNT_WEBHOOK_PUBLIC_KEY` | no | — | PEM key for webhook signature verification |
+| `KOUNT_WEBHOOK_PUBLIC_KEY` | no | — | Webhook public key exactly as the portal shows it: bare base64 SPKI (`MIICIjANBgkq...`); PEM also accepted |
 | `KOUNT_CHANNEL` | no | `OPENSHOP_WEB` | Order `channel` |
 | `KOUNT_DDC_ENVIRONMENT` | no | `TEST` | Web SDK environment (`TEST` → tst.kaptcha.com, `PROD` → ssl.kaptcha.com) |
 | `STRIPE_WEBHOOK_SECRET` | **yes** | — | Stripe webhook signature |

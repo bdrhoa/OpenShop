@@ -15,6 +15,7 @@ export const KOUNT_TIMESTAMP_HEADER = 'x-event-timestamp'
 /** The only unsigned event allowed, and only as a no-op reachability probe. */
 export const KOUNT_TEST_PING_EVENT_TYPE = 'Webhook.TestPing'
 
+/** Accepts the portal's bare base64 SPKI key or a PEM-armored one. */
 function pemToDer(pem) {
   const body = String(pem)
     .replace(/-----BEGIN PUBLIC KEY-----/, '')

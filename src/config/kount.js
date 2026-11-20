@@ -47,7 +47,7 @@ export const KOUNT_SETTING_FIELDS = Object.freeze([
   { key: 'KOUNT_API_KEY', label: 'Kount API key', secret: true },
   { key: 'KOUNT_MAX_RETRIES', label: 'Kount max retries (0–3, default 2)', secret: false },
   { key: 'KOUNT_FALLBACK_DECISION', label: 'Kount fallback decision (APPROVE or DECLINE)', secret: false },
-  { key: 'KOUNT_WEBHOOK_PUBLIC_KEY', label: 'Kount webhook public key (PEM)', secret: false, multiline: true },
+  { key: 'KOUNT_WEBHOOK_PUBLIC_KEY', label: 'Kount webhook public key (base64 from the Kount portal)', secret: false, multiline: true },
   { key: 'KOUNT_CHANNEL', label: 'Kount channel', secret: false },
   { key: 'KOUNT_DDC_ENVIRONMENT', label: 'Kount device collection environment (TEST or PROD)', secret: false },
   { key: 'STRIPE_WEBHOOK_SECRET', label: 'Stripe webhook signing secret', secret: true },
@@ -99,8 +99,23 @@ export function validateKountSetting(key, raw) {
       return upper
     }
     case 'KOUNT_WEBHOOK_PUBLIC_KEY': {
-      if (!value.includes('BEGIN PUBLIC KEY')) {
-        throw new KountConfigError('KOUNT_WEBHOOK_PUBLIC_KEY must be a PEM public key (-----BEGIN PUBLIC KEY-----)')
+      // The Kount portal shows the key as bare base64 (DER SubjectPublicKeyInfo,
+      // e.g. "MIICIjANBgkq..."). PEM-armored keys are accepted too.
+      const body = value
+        .replace(/-----BEGIN PUBLIC KEY-----/, '')
+        .replace(/-----END PUBLIC KEY-----/, '')
+        .replace(/\\n/g, '')
+        .replace(/\s+/g, '')
+      let der
+      try {
+        if (!/^[A-Za-z0-9+/]+={0,2}$/.test(body)) throw new Error('not base64')
+        der = atob(body)
+      } catch {
+        throw new KountConfigError('KOUNT_WEBHOOK_PUBLIC_KEY must be the base64 public key from the Kount portal (for example MIICIjANBgkq...)')
+      }
+      // DER SubjectPublicKeyInfo starts with a SEQUENCE tag (0x30).
+      if (der.length < 64 || der.charCodeAt(0) !== 0x30) {
+        throw new KountConfigError('KOUNT_WEBHOOK_PUBLIC_KEY is not a valid public key (expected base64 like MIICIjANBgkq...)')
       }
       return value
     }
