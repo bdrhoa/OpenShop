@@ -1,6 +1,8 @@
 # Kount Payments Fraud (v2)
 
-OpenShop can screen every card payment with Kount Payments Fraud v2 (Sandbox).
+OpenShop can screen every card payment with Kount Payments Fraud v2.
+`KOUNT_ENVIRONMENT` (`SANDBOX` default, or `PRODUCTION`) selects the Kount
+endpoints and the device collection environment together.
 Screening is **off** until `KOUNT_CLIENT_ID` and `KOUNT_API_KEY` are both set
 (Worker env or Admin → Developer settings). With screening off, checkout works
 exactly as before.
@@ -52,14 +54,15 @@ issuer authorization) → `REFUSED`/`UNKNOWN`.
 | `src/routes/public/webhooks.js` | `/api/webhooks/stripe`, `/api/webhooks/kount` |
 | `src/worker.js` (`scheduled`) | Cron recovery entry point |
 
-## Setup (Sandbox)
+## Setup
 
 1. Set the settings below in **Admin → Developer settings → Fraud screening (Kount)**
    or as Worker env vars / secrets.
 2. Copy the **Kount webhook URL** shown (display-only) on that screen into the
    Kount portal, and paste the portal's webhook public key into
    `KOUNT_WEBHOOK_PUBLIC_KEY`.
-3. Copy the **Stripe webhook URL** into Stripe → Developers → Webhooks, subscribe
+3. Copy the **Stripe webhook URL** (`/api/webhooks/stripe`; `/api/stripe-webhook`
+   is accepted as an alias) into Stripe → Developers → Webhooks, subscribe
    to the listed events, and set its signing secret as `STRIPE_WEBHOOK_SECRET`.
 4. Deploy. The site toml carries `[triggers] crons = ["*/5 * * * *"]` for the
    recovery job; the settings screen shows when it last ran.
@@ -72,8 +75,18 @@ issuer authorization) → `REFUSED`/`UNKNOWN`.
 | `KOUNT_FALLBACK_DECISION` | no | `APPROVE` | Applied only when Evaluate Order ends with no usable decision |
 | `KOUNT_WEBHOOK_PUBLIC_KEY` | no | — | Webhook public key exactly as the portal shows it: bare base64 SPKI (`MIICIjANBgkq...`); PEM also accepted |
 | `KOUNT_CHANNEL` | no | `OPENSHOP_WEB` | Order `channel` |
-| `KOUNT_DDC_ENVIRONMENT` | no | `TEST` | Web SDK environment (`TEST` → tst.kaptcha.com, `PROD` → ssl.kaptcha.com) |
+| `KOUNT_ENVIRONMENT` | no | `SANDBOX` | Selects endpoints and device collection together (table below) |
 | `STRIPE_WEBHOOK_SECRET` | **yes** | — | Stripe webhook signature |
+
+| `KOUNT_ENVIRONMENT` | Token URL | API base | Device collection |
+|---|---|---|---|
+| `SANDBOX` | `https://login-uat.equifax.com/as/token` | `https://api-sandbox.kount.com` | `TEST` (tst.kaptcha.com) |
+| `PRODUCTION` | `https://login.equifax.com/as/token` | `https://api.kount.com` | `PROD` (ssl.kaptcha.com) |
+
+The production hosts are not covered by the Kount Developer MCP (Sandbox only)
+and have not been exercised from OpenShop; confirm them with Kount before
+switching. Credentials are per environment: Sandbox keys do not work against
+production. Cached tokens are keyed by token URL and client ID.
 
 Precedence is Developer Settings (KV) first, then env, resolved per request, so
 a saved value applies to the next operation without a redeploy. Both paths use

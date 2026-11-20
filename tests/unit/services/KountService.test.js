@@ -100,14 +100,27 @@ describe('failed attempt payloads', () => {
 describe('parseKountConfig', () => {
   it('applies defaults', () => {
     const c = parseKountConfig({})
-    expect(c).toMatchObject({ enabled: false, maxRetries: 2, fallbackDecision: 'APPROVE', ddcEnvironment: 'TEST' })
+    expect(c).toMatchObject({ enabled: false, maxRetries: 2, fallbackDecision: 'APPROVE', environment: 'SANDBOX', ddcEnvironment: 'TEST' })
     expect(c.tokenUrl).toBe('https://login-uat.equifax.com/as/token')
+    expect(c.apiBaseUrl).toBe('https://api-sandbox.kount.com')
+  })
+  it('one environment setting selects endpoints and device collection together', () => {
+    const p = parseKountConfig({ KOUNT_ENVIRONMENT: 'production' })
+    expect(p).toMatchObject({
+      environment: 'PRODUCTION',
+      tokenUrl: 'https://login.equifax.com/as/token',
+      apiBaseUrl: 'https://api.kount.com',
+      ddcEnvironment: 'PROD',
+      ordersPath: '/commerce/v2/orders',
+    })
+    expect(parseKountConfig({ KOUNT_ENVIRONMENT: 'Sandbox' })).toMatchObject({ environment: 'SANDBOX', ddcEnvironment: 'TEST', apiBaseUrl: 'https://api-sandbox.kount.com' })
   })
   it('rejects invalid policy values instead of silently defaulting', () => {
     expect(() => parseKountConfig({ KOUNT_MAX_RETRIES: '4' })).toThrow(KountConfigError)
     expect(() => parseKountConfig({ KOUNT_MAX_RETRIES: 'two' })).toThrow(KountConfigError)
     expect(() => parseKountConfig({ KOUNT_FALLBACK_DECISION: 'REVIEW' })).toThrow(KountConfigError)
-    expect(() => parseKountConfig({ KOUNT_DDC_ENVIRONMENT: 'STAGING' })).toThrow(KountConfigError)
+    expect(() => parseKountConfig({ KOUNT_ENVIRONMENT: 'STAGING' })).toThrow(KountConfigError)
+    expect(() => parseKountConfig({ KOUNT_ENVIRONMENT: 'TEST' })).toThrow(KountConfigError)
   })
   it('accepts the webhook key as bare base64 (as the portal shows it) or PEM', () => {
     const der = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA' + 'A'.repeat(300) + 'IDAQAB'

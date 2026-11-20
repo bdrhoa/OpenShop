@@ -1,6 +1,7 @@
 // Webhook processors for fraud screening.
 //
 //   POST /api/webhooks/stripe  Stripe events (signature: STRIPE_WEBHOOK_SECRET)
+//   POST /api/stripe-webhook   alias of the above
 //   POST /api/webhooks/kount   Kount reviewer events (RSA-PSS, KOUNT_WEBHOOK_PUBLIC_KEY)
 //
 // Both routes always exist. With no key configured they reject business
@@ -37,7 +38,7 @@ function logSummary(source, fields) {
 // ---------------------------------------------------------------------------
 // Stripe
 // ---------------------------------------------------------------------------
-router.post('/webhooks/stripe', async (c) => {
+async function handleStripeWebhook(c) {
   const kv = getKVNamespace(c.env)
   const rawBody = await c.req.text()
   if (rawBody.length > MAX_WEBHOOK_BYTES) return c.json({ error: 'payload_too_large' }, 413)
@@ -102,7 +103,11 @@ router.post('/webhooks/stripe', async (c) => {
 
   await store.markEventProcessed('stripe', event.id)
   return c.json({ received: true, outcome: result.outcome })
-})
+}
+
+router.post('/webhooks/stripe', handleStripeWebhook)
+// Alias: endpoints registered in Stripe as /api/stripe-webhook keep working.
+router.post('/stripe-webhook', handleStripeWebhook)
 
 // ---------------------------------------------------------------------------
 // Kount

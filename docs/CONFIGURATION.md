@@ -31,7 +31,7 @@ GOOGLE_CLIENT_SECRET=your_google_oauth_client_secret
 # Optional: customize the root folder created/used in Drive
 DRIVE_ROOT_FOLDER=OpenShop
 
-# Optional: Kount Payments Fraud (Sandbox) — see docs/KOUNT.md
+# Optional: Kount Payments Fraud — see docs/KOUNT.md
 # Screening is on when both client ID and API key are set.
 KOUNT_CLIENT_ID=your_kount_client_id
 KOUNT_API_KEY=your_kount_api_key            # secret
@@ -39,7 +39,7 @@ KOUNT_MAX_RETRIES=2                         # 0-3
 KOUNT_FALLBACK_DECISION=APPROVE             # APPROVE or DECLINE
 KOUNT_WEBHOOK_PUBLIC_KEY=MIICIjANBgkq...      # base64, as shown in the Kount portal
 KOUNT_CHANNEL=OPENSHOP_WEB
-KOUNT_DDC_ENVIRONMENT=TEST                  # TEST or PROD
+KOUNT_ENVIRONMENT=SANDBOX                   # SANDBOX or PRODUCTION (endpoints + device collection)
 STRIPE_WEBHOOK_SECRET=whsec_...             # secret
 ```
 

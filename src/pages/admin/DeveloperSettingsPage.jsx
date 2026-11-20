@@ -193,7 +193,7 @@ export function DeveloperSettingsPage() {
 
       <h3 className="mt-8 text-lg font-semibold text-[var(--admin-text-primary)]">Fraud screening (Kount)</h3>
       <p className="mt-1.5 text-sm text-[var(--admin-text-secondary)]">
-        Kount Payments Fraud (Sandbox). When the client ID and API key are set, card
+        Kount Payments Fraud. When the client ID and API key are set, card
         payments are authorized but captured only after Kount evaluates the order.
         Each setting can also come from the Worker environment variable of the same name.
       </p>
@@ -203,6 +203,7 @@ export function DeveloperSettingsPage() {
       {fraud?.kount && !fraud.kount.error && (
         <p className="mt-2 text-xs text-[var(--admin-text-muted)]">
           Status: {fraud.kount.enabled ? 'screening on' : 'screening off (client ID and API key required)'}
+          {' · '}{fraud.kount.environment} ({fraud.kount.apiBaseUrl})
           {' · '}effective retries {fraud.kount.maxRetries}
           {' · '}fallback {fraud.kount.fallbackDecision}
           {' · '}device collection {fraud.kount.ddcEnvironment}

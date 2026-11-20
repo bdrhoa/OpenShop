@@ -70,7 +70,8 @@ async function fraudStatus(c) {
       ddcEnvironment: config.ddcEnvironment,
       webhookKeyFingerprint: await publicKeyFingerprint(config.webhookPublicKey),
       stripeWebhookConfigured: Boolean(config.stripeWebhookSecret),
-      environment: 'sandbox',
+      environment: config.environment,
+      apiBaseUrl: config.apiBaseUrl,
     }
   } catch (error) {
     kount = { enabled: false, error: error.message }

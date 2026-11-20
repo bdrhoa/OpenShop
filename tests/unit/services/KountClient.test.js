@@ -63,6 +63,24 @@ describe('KountClient', () => {
     expect(tokenInit.body).toContain('scope=k1_integration_api')
   })
 
+  it('production environment sends token and API calls to production hosts, with a separate token cache', async () => {
+    const urls = []
+    const fetchImpl = async (url) => {
+      urls.push(String(url))
+      if (String(url).endsWith('/as/token')) return json(200, { access_token: 't', expires_in: 600 })
+      return json(200, {})
+    }
+    const prod = { ...parseKountConfig({ KOUNT_CLIENT_ID: 'client-1', KOUNT_API_KEY: 'apikey', KOUNT_ENVIRONMENT: 'PRODUCTION' }) }
+    await new KountClient(cfg(), { fetchImpl, ...fast }).request({ method: 'PATCH', path: '/commerce/v2/orders/K1', body: {}, operation: 'update_order' })
+    await new KountClient(prod, { fetchImpl, ...fast }).request({ method: 'PATCH', path: '/commerce/v2/orders/K1', body: {}, operation: 'update_order' })
+    expect(urls).toEqual([
+      'https://login-uat.equifax.com/as/token',
+      'https://api-sandbox.kount.com/commerce/v2/orders/K1',
+      'https://login.equifax.com/as/token',
+      'https://api.kount.com/commerce/v2/orders/K1',
+    ])
+  })
+
   it('reuses the cached token across operations', async () => {
     const { fetchImpl, calls } = scriptedFetch([json(200, {}), json(200, {})])
     const client = new KountClient(cfg(), { fetchImpl, ...fast })

@@ -5,25 +5,47 @@
 // KV and takes precedence. Both paths go through `parseKountConfig`, so the
 // same defaults and validation apply whichever source a value came from.
 //
-// Endpoints are fixed to Kount Sandbox. The Sandbox token endpoint is
-// login-uat.equifax.com; the Commerce OpenAPI document still names a stale
-// login.kount.com host, which we deliberately do not use (see docs/KOUNT.md).
+// One setting, KOUNT_ENVIRONMENT (SANDBOX or PRODUCTION), selects the token
+// endpoint, the API host and the device data collection environment together,
+// so they can never point at different Kount environments. The Sandbox token
+// endpoint is login-uat.equifax.com; the Commerce OpenAPI document still names
+// a stale login.kount.com host, which we deliberately do not use (see
+// docs/KOUNT.md).
 
-export const KOUNT_SANDBOX = Object.freeze({
-  tokenUrl: 'https://login-uat.equifax.com/as/token',
-  apiBaseUrl: 'https://api-sandbox.kount.com',
+const KOUNT_COMMON = Object.freeze({
   ordersPath: '/commerce/v2/orders',
   tokenScope: 'k1_integration_api',
 })
 
+export const KOUNT_ENVIRONMENT_SETTINGS = Object.freeze({
+  SANDBOX: Object.freeze({
+    ...KOUNT_COMMON,
+    environment: 'SANDBOX',
+    tokenUrl: 'https://login-uat.equifax.com/as/token',
+    apiBaseUrl: 'https://api-sandbox.kount.com',
+    ddcEnvironment: 'TEST', // tst.kaptcha.com
+  }),
+  PRODUCTION: Object.freeze({
+    ...KOUNT_COMMON,
+    environment: 'PRODUCTION',
+    tokenUrl: 'https://login.equifax.com/as/token',
+    apiBaseUrl: 'https://api.kount.com',
+    ddcEnvironment: 'PROD', // ssl.kaptcha.com
+  }),
+})
+
+export const KOUNT_ENVIRONMENTS = Object.freeze(Object.keys(KOUNT_ENVIRONMENT_SETTINGS))
+
+/** Kept for callers that want the Sandbox endpoints explicitly. */
+export const KOUNT_SANDBOX = KOUNT_ENVIRONMENT_SETTINGS.SANDBOX
+
 export const KOUNT_DECISIONS = Object.freeze(['APPROVE', 'DECLINE', 'REVIEW'])
 export const KOUNT_FALLBACK_DECISIONS = Object.freeze(['APPROVE', 'DECLINE'])
-export const KOUNT_DDC_ENVIRONMENTS = Object.freeze(['TEST', 'PROD'])
 
 export const KOUNT_DEFAULTS = Object.freeze({
   maxRetries: 2,
   fallbackDecision: 'APPROVE',
-  ddcEnvironment: 'TEST',
+  environment: 'SANDBOX',
   channel: 'OPENSHOP_WEB',
   // Per-attempt HTTP timeout and the total budget for one logical operation
   // (token + request + backoff sleeps). Kept well under the Stripe webhook
@@ -49,7 +71,7 @@ export const KOUNT_SETTING_FIELDS = Object.freeze([
   { key: 'KOUNT_FALLBACK_DECISION', label: 'Kount fallback decision (APPROVE or DECLINE)', secret: false },
   { key: 'KOUNT_WEBHOOK_PUBLIC_KEY', label: 'Kount webhook public key (base64 from the Kount portal)', secret: false, multiline: true },
   { key: 'KOUNT_CHANNEL', label: 'Kount channel', secret: false },
-  { key: 'KOUNT_DDC_ENVIRONMENT', label: 'Kount device collection environment (TEST or PROD)', secret: false },
+  { key: 'KOUNT_ENVIRONMENT', label: 'Kount environment (SANDBOX or PRODUCTION; sets API endpoints and device collection)', secret: false },
   { key: 'STRIPE_WEBHOOK_SECRET', label: 'Stripe webhook signing secret', secret: true },
 ])
 
@@ -91,10 +113,10 @@ export function validateKountSetting(key, raw) {
       }
       return upper
     }
-    case 'KOUNT_DDC_ENVIRONMENT': {
+    case 'KOUNT_ENVIRONMENT': {
       const upper = value.toUpperCase()
-      if (!KOUNT_DDC_ENVIRONMENTS.includes(upper)) {
-        throw new KountConfigError('KOUNT_DDC_ENVIRONMENT must be TEST or PROD')
+      if (!KOUNT_ENVIRONMENTS.includes(upper)) {
+        throw new KountConfigError('KOUNT_ENVIRONMENT must be SANDBOX or PRODUCTION')
       }
       return upper
     }
@@ -138,6 +160,7 @@ export function parseKountConfig(raw = {}) {
   const v = (key) => validateKountSetting(key, raw[key])
   const clientId = v('KOUNT_CLIENT_ID')
   const apiKey = v('KOUNT_API_KEY')
+  const environment = v('KOUNT_ENVIRONMENT') ?? KOUNT_DEFAULTS.environment
   return {
     enabled: Boolean(clientId && apiKey),
     clientId,
@@ -146,11 +169,11 @@ export function parseKountConfig(raw = {}) {
     fallbackDecision: v('KOUNT_FALLBACK_DECISION') ?? KOUNT_DEFAULTS.fallbackDecision,
     webhookPublicKey: v('KOUNT_WEBHOOK_PUBLIC_KEY'),
     channel: v('KOUNT_CHANNEL') ?? KOUNT_DEFAULTS.channel,
-    ddcEnvironment: v('KOUNT_DDC_ENVIRONMENT') ?? KOUNT_DEFAULTS.ddcEnvironment,
     stripeWebhookSecret: v('STRIPE_WEBHOOK_SECRET'),
     attemptTimeoutMs: KOUNT_DEFAULTS.attemptTimeoutMs,
     operationDeadlineMs: KOUNT_DEFAULTS.operationDeadlineMs,
-    ...KOUNT_SANDBOX,
+    // tokenUrl, apiBaseUrl, ordersPath, tokenScope, environment, ddcEnvironment
+    ...KOUNT_ENVIRONMENT_SETTINGS[environment],
   }
 }
 

@@ -25,7 +25,7 @@ These endpoints handle payment processing and checkout flows.
 | `/api/create-checkout-session` | `POST` | Single item checkout | None |
 | `/api/create-cart-checkout-session` | `POST` | Multi-item cart checkout | None |
 | `/api/kount/config` | `GET` | Kount device-collection config (`enabled`, `clientId`, `environment`; no secrets) | None |
-| `/api/webhooks/stripe` | `POST` | Stripe events for fraud screening (Stripe signature) | Signature |
+| `/api/webhooks/stripe` | `POST` | Stripe events for fraud screening (Stripe signature); `/api/stripe-webhook` is an alias | Signature |
 | `/api/webhooks/kount` | `POST` | Kount reviewer events (RSA-PSS signature) | Signature |
 
 Both checkout endpoints accept an optional `kountSessionId` (`[A-Za-z0-9_-]{1,32}`).

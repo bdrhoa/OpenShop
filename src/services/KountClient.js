@@ -67,7 +67,8 @@ export class KountClient {
   }
 
   cacheKey() {
-    return this.config.clientId || 'default'
+    // Tokens are per environment as well as per client.
+    return `${this.config.tokenUrl}|${this.config.clientId || 'default'}`
   }
 
   invalidateToken() {

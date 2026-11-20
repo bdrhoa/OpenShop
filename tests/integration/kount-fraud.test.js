@@ -153,6 +153,14 @@ describe('Kount fraud screening routes', () => {
       expect(res.status).toBe(400)
     })
 
+    it('also accepts Stripe deliveries at /api/stripe-webhook', async () => {
+      enableKount()
+      stripeMock.webhooks.constructEventAsync.mockRejectedValueOnce(new Error('bad sig'))
+      const res = await executeRequest(app, createTestRequest('/api/stripe-webhook', { method: 'POST', body: {}, headers: { 'stripe-signature': 't=1,v1=x' } }), env)
+      // Reaches the Stripe handler (signature check), not a 404.
+      expect(res.status).toBe(400)
+    })
+
     it('evaluates a completed checkout with Kount and captures on APPROVE', async () => {
       enableKount()
       stripeMock.webhooks.constructEventAsync.mockResolvedValueOnce({
@@ -263,7 +271,7 @@ describe('Kount fraud screening routes', () => {
       expect(data.fraud.webhooks.stripe).toBe('https://test.workers.dev/api/webhooks/stripe')
       expect(data.fraud.kount).toMatchObject({ enabled: true, maxRetries: 2, fallbackDecision: 'APPROVE' })
       const keys = data.fields.map((f) => f.key)
-      for (const k of ['KOUNT_CLIENT_ID', 'KOUNT_API_KEY', 'KOUNT_MAX_RETRIES', 'KOUNT_FALLBACK_DECISION', 'KOUNT_WEBHOOK_PUBLIC_KEY', 'KOUNT_CHANNEL', 'KOUNT_DDC_ENVIRONMENT', 'STRIPE_WEBHOOK_SECRET']) {
+      for (const k of ['KOUNT_CLIENT_ID', 'KOUNT_API_KEY', 'KOUNT_MAX_RETRIES', 'KOUNT_FALLBACK_DECISION', 'KOUNT_WEBHOOK_PUBLIC_KEY', 'KOUNT_CHANNEL', 'KOUNT_ENVIRONMENT', 'STRIPE_WEBHOOK_SECRET']) {
         expect(keys).toContain(k)
       }
       const apiKey = data.fields.find((f) => f.key === 'KOUNT_API_KEY')
