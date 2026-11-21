@@ -181,6 +181,12 @@ The cron job (`scheduled` in `src/worker.js`) runs without any buyer request:
 - **No atomic claim.** Workers KV has no compare-and-swap, so the evaluation
   claim is best-effort. Payment effects are idempotent via Stripe keys, but two
   simultaneous deliveries could each send an Evaluate Order. Tracked as TD-005.
+- **Stale reads.** KV is eventually consistent, so a handler can read an older
+  copy of an order and write it back last. Stripe's refund webhook can arrive
+  about a second after a reviewer decline. The refund handler therefore records
+  the decline itself (`review.recordedFrom: "stripe_refund"`): OpenShop only
+  creates these refunds after a verified decline, and the refund metadata
+  carries the Kount event key.
 - An evaluation whose owner died after claiming becomes `unknown` and needs an
   operator (check Kount and Stripe); it is not re-sent.
 - Fallback decisions after a failed evaluation leave no Kount order, so their

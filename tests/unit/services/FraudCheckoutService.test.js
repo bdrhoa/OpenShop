@@ -225,7 +225,7 @@ describe('FraudCheckoutService — reviewer decisions', () => {
     const { svc, stripe, kount, store } = await reviewOrder()
     const res = await svc.handleKountEvent(evt('DECLINE'))
     expect(res.outcome).toBe('review_declined_refund_pending')
-    expect(stripe.refundPaymentIntent).toHaveBeenCalledWith(PI, CS)
+    expect(stripe.refundPaymentIntent).toHaveBeenCalledWith(PI, CS, 'e-DECLINE')
     let rec = await store.getOrder(CS)
     expect(rec).toMatchObject({ fulfillmentAllowed: false, payment: { state: 'refund_pending', refundId: 're_1' } })
     // A refund request is not a refund: nothing REFUNDED yet.
@@ -261,6 +261,32 @@ describe('FraudCheckoutService — reviewer decisions', () => {
     expect(rec.reports.some((r) => r.effect === 'refund')).toBe(false)
     const refundedReports = kount.updateTransactionStatus.mock.calls.filter(([a]) => a.transactionStatus === 'REFUNDED')
     expect(refundedReports).toHaveLength(1)
+  })
+
+  it('a refund webhook that read a stale copy (review still open) still records the decline', async () => {
+    // Workers KV is eventually consistent: Stripe's refund webhook can read
+    // the order as saved before the decline and then write last.
+    const { svc, store } = await reviewOrder()
+    const stale = structuredClone(await store.getOrder(CS))
+    expect(stale.review.status).toBe('open')
+    await svc.handleKountEvent(evt('DECLINE'))
+    await store.saveOrder(stale) // the stale copy wins the race
+    const res = await svc.handleRefund({ id: 're_1', status: 'succeeded', created: 1795000000, payment_intent: PI, metadata: { openshop_refund_cause: 'kount_reviewer_decline', openshop_checkout_session: CS, openshop_kount_event: 'e-DECLINE' } })
+    expect(res.outcome).toBe('refund_refunded')
+    const rec = await store.getOrder(CS)
+    expect(rec).toMatchObject({
+      fulfillmentAllowed: false,
+      buyerStatus: 'declined_refunded',
+      payment: { state: 'refunded', refundId: 're_1' },
+      review: { status: 'declined', eventKey: 'e-DECLINE', recordedFrom: 'stripe_refund' },
+    })
+  })
+
+  it('a refund never overrides an approved review', async () => {
+    const { svc, store } = await reviewOrder()
+    await svc.handleKountEvent(evt('APPROVE'))
+    await svc.handleRefund({ id: 're_1', status: 'succeeded', payment_intent: PI, metadata: { openshop_refund_cause: 'kount_reviewer_decline', openshop_checkout_session: CS } })
+    expect((await store.getOrder(CS)).review.status).toBe('approved')
   })
 
   it('unrelated or older refund events cannot regress state', async () => {

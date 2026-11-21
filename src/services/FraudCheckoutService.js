@@ -415,7 +415,7 @@ export class FraudCheckoutService {
   async requestRefund(record) {
     if (['refund_pending', 'refunded'].includes(record.payment.state)) return { outcome: 'refund_already_requested' }
     try {
-      const refund = await this.stripe.refundPaymentIntent(record.paymentIntentId, record.checkoutSessionId)
+      const refund = await this.stripe.refundPaymentIntent(record.paymentIntentId, record.checkoutSessionId, record.review?.eventKey)
       record.payment = { ...record.payment, refundId: refund.id, refundRequestedAt: this.iso(), lastError: undefined }
       record.reports = (record.reports || []).filter((r) => !(r.operation === PAYMENT_EFFECT && r.effect === 'refund'))
       this.applyRefundStatus(record, refund)
@@ -471,6 +471,20 @@ export class FraudCheckoutService {
       // Provider callback arrived before we saved the refund ID.
       record.payment = { ...record.payment, refundId: refund.id }
       record.reports = (record.reports || []).filter((r) => !(r.operation === PAYMENT_EFFECT && r.effect === 'refund'))
+    }
+    // We only create these refunds after a verified reviewer decline, so the
+    // refund itself proves the decline. Workers KV is eventually consistent:
+    // this handler can read a copy saved before the decline and, writing
+    // last, would otherwise put the review back to "open".
+    const reviewStatus = record.review?.status
+    if (record.evaluation?.decision === 'REVIEW' && reviewStatus !== 'approved' && reviewStatus !== 'declined') {
+      record.review = {
+        ...(record.review || {}),
+        status: 'declined',
+        decidedAt: refund.created ? new Date(refund.created * 1000).toISOString() : this.iso(),
+        eventKey: refund.metadata.openshop_kount_event || record.review?.eventKey,
+        recordedFrom: 'stripe_refund',
+      }
     }
     this.applyRefundStatus(record, refund)
     await this.store.saveOrder(record)

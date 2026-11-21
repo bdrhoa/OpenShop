@@ -380,12 +380,13 @@ export class StripeService {
    * PaymentIntent. No `reason: 'fraudulent'`: that feeds Stripe Radar and
    * can block later test purchases from the same identities.
    */
-  async refundPaymentIntent(paymentIntentId, checkoutSessionId) {
+  async refundPaymentIntent(paymentIntentId, checkoutSessionId, kountEventKey) {
     return await this.stripe.refunds.create({
       payment_intent: paymentIntentId,
       metadata: {
         openshop_checkout_session: checkoutSessionId,
         openshop_refund_cause: 'kount_reviewer_decline',
+        ...(kountEventKey ? { openshop_kount_event: String(kountEventKey).slice(0, 500) } : {}),
       },
     }, {
       idempotencyKey: `openshop-kount-refund-${paymentIntentId}`,
